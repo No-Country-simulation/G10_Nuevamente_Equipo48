@@ -1,0 +1,31 @@
+NuevaMente — Validación integral Fase 05 rev5
+Fecha: 2026-10-02
+
+Ejecución:
+python /mnt/data/NuevaMente_Auditoria_Integral_Fase05/tools/validate_corpus.py
+
+Código de salida: 0
+Salida del validador:
+Inventario: /mnt/data/NuevaMente_Auditoria_Integral_Fase05/inventario/inventario_corpus.csv
+Registros: 22
+ERRORES: 0
+ADVERTENCIAS: 0
+
+
+Control cruzado:
+- Registros matriz: 22
+- Registros inventario: 22
+- IDs coincidentes: True
+- Estados coincidentes: True
+- Distribución: {'APTO': 12, 'APTO_CON_REVISIÓN': 8, 'NO_APTO': 2}
+- Estado de selección: {'EN_EVALUACION': 22}
+
+Nota de entorno:
+El proceso de Python emitió un mensaje de warmup del runtime de hojas de cálculo en stderr
+(hydrateCrdtFromProto requires an empty collaborative document). El script validate_corpus.py
+terminó con código 0 y reportó 22 registros, 0 errores y 0 advertencias. El mensaje de warmup
+no procede de una regla de validación del corpus.
+
+Alcance:
+La validación estructural no certifica por sí sola la exactitud de cada fuente ni sustituye
+los controles de snapshot/hash que se deben ejecutar al preservar los archivos de entrada.
