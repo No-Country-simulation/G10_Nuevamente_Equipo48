@@ -1,0 +1,206 @@
+diff --git a/backend/backend/tests/conftest.py b/backend/backend/tests/conftest.py
+index a795b70..ecb8ad9 100644
+--- a/backend/backend/tests/conftest.py
++++ b/backend/backend/tests/conftest.py
+@@ -10,7 +10,7 @@ from __future__ import annotations
+ 
+ import pytest
+ import numpy as np
+-from unittest.mock import MagicMock
++from unittest.mock import MagicMock, patch
+ 
+ from starlette.testclient import TestClient
+ 
+@@ -18,6 +18,53 @@ from app.services.rag_service import ChunkMetadata
+ from app.services.oci_service import OCIUploadResult
+ 
+ 
++from contextlib import asynccontextmanager
++from app.main import app
++
++
++# ---------------------------------------------------------------------------
++# Fixture autouse para aislar tests de descargas externas de modelos y lifespan
++# ---------------------------------------------------------------------------
++
++
++@pytest.fixture(autouse=True)
++def mock_sentence_transformer_loader():
++    """
++    Evita que RAGService intente descargar o cargar SentenceTransformer desde HuggingFace.
++    Retorna un mock uniforme listo para tests.
++    """
++    mock_model = MagicMock()
++    # Retorna un vector normalizado para cualquier texto
++    emb = np.ones((1, 384), dtype=np.float32)
++    emb = emb / np.linalg.norm(emb)
++    mock_model.encode.return_value = emb
++
++    with patch(
++        "app.services.rag_service.RAGService._cargar_sentence_transformer",
++        return_value=mock_model,
++    ):
++        yield mock_model
++
++
++@pytest.fixture(autouse=True)
++def isolate_app_lifespan():
++    """
++    Aísla las pruebas de la ejecución de lifespan en TestClient.
++    Evita que el arranque de FastAPI sobrescriba los servicios mockeados en app.state
++    o intente inicializar recursos externos no deseados.
++    """
++    @asynccontextmanager
++    async def noop_lifespan(application):
++        yield
++
++    original_lifespan = app.router.lifespan_context
++    app.router.lifespan_context = noop_lifespan
++    try:
++        yield
++    finally:
++        app.router.lifespan_context = original_lifespan
++
++
+ # ---------------------------------------------------------------------------
+ # Fixtures de mocks de servicios
+ # ---------------------------------------------------------------------------
+diff --git a/backend/backend/tests/test_adaptacion.py b/backend/backend/tests/test_adaptacion.py
+index 0251d2c..9700b08 100644
+--- a/backend/backend/tests/test_adaptacion.py
++++ b/backend/backend/tests/test_adaptacion.py
+@@ -189,6 +189,16 @@ class TestAdaptacionEndpoint:
+         assert data["metadatos"]["nicho"] == REQUEST_VALIDO["nicho"]
+         assert data["metadatos"]["nivel_detalle"] == REQUEST_VALIDO["nivel_detalle"]
+ 
++    def test_metadatos_contienen_campos_educativos_qa_007(self, client_con_mocks):
++        """QA-007: Los metadatos de la respuesta deben contener tiempo_estimado_estudio_minutos y conceptos_clave."""
++        response = client_con_mocks.post("/api/v1/adaptacion", json=REQUEST_VALIDO)
++        data = response.json()
++        assert "tiempo_estimado_estudio_minutos" in data["metadatos"]
++        assert "conceptos_clave" in data["metadatos"]
++        assert isinstance(data["metadatos"]["tiempo_estimado_estudio_minutos"], int)
++        assert data["metadatos"]["tiempo_estimado_estudio_minutos"] >= 1
++        assert isinstance(data["metadatos"]["conceptos_clave"], list)
++
+     def test_document_id_en_respuesta_coincide_con_request(self, client_con_mocks):
+         """El document_id de la respuesta debe coincidir con el enviado en el request."""
+         response = client_con_mocks.post("/api/v1/adaptacion", json=REQUEST_VALIDO)
+diff --git a/backend/backend/tests/test_document_service.py b/backend/backend/tests/test_document_service.py
+index ae1328f..8791e14 100644
+--- a/backend/backend/tests/test_document_service.py
++++ b/backend/backend/tests/test_document_service.py
+@@ -201,7 +201,7 @@ class TestMarkdownSimple:
+         Un archivo Markdown con un encabezado y un párrafo de texto debe
+         retornar el texto visible sin las marcas de formato.
+         """
+-        markdown = b"# Introducción a Python\n\nPython es un lenguaje interpretado.\n"
++        markdown = "# Introducción a Python\n\nPython es un lenguaje interpretado.\n".encode("utf-8")
+         resultado = service.extract_text(markdown, "text/markdown")
+ 
+         # El texto del párrafo debe estar presente en el resultado
+@@ -225,7 +225,7 @@ class TestMarkdownSimple:
+         Un enlace Markdown [texto](url) debe conservar el texto del enlace
+         y descartar la URL en el resultado.
+         """
+-        markdown = b"Visita la [documentación oficial](https://docs.python.org) para más info.\n"
++        markdown = "Visita la [documentación oficial](https://docs.python.org) para más info.\n".encode("utf-8")
+         resultado = service.extract_text(markdown, "text/markdown")
+ 
+         assert "documentación oficial" in resultado
+@@ -296,3 +296,25 @@ class TestTXTUnicodeEspecial:
+             texto.encode("utf-8"), "text/plain; charset=utf-8"
+         )
+         assert resultado == texto
++
++    def test_pdf_sintetico_valido_extrae_texto_correctamente(
++        self, service: DocumentService
++    ) -> None:
++        """
++        QA-001: Verifica que DocumentService procesa y extrae correctamente el texto
++        de un archivo PDF sintético válido generado en memoria sin dependencias externas.
++        """
++        import fitz  # PyMuPDF
++
++        doc = fitz.open()
++        page = doc.new_page()
++        texto_esperado = (
++            "NuevaMente: Sistema Inteligente de Adaptacion y Generacion Educativa."
++        )
++        page.insert_text((50, 72), texto_esperado)
++        pdf_bytes = doc.tobytes()
++        doc.close()
++
++        resultado = service.extract_text(pdf_bytes, "application/pdf")
++        assert texto_esperado in resultado
++
+diff --git a/backend/backend/tests/test_schemas.py b/backend/backend/tests/test_schemas.py
+index 7503eb4..22fe261 100644
+--- a/backend/backend/tests/test_schemas.py
++++ b/backend/backend/tests/test_schemas.py
+@@ -364,3 +364,65 @@ def test_error_response_detalle_vacio():
+     """ErrorResponse debe aceptar detalle vacío."""
+     err = ErrorResponse(error="Fallo de validación", detalle="")
+     assert err.detalle == ""
++
++
++# ---------------------------------------------------------------------------
++# Tests de Metadatos Educativos (QA-007)
++# ---------------------------------------------------------------------------
++
++
++def test_metadatos_incluyen_campos_educativos_qa_007():
++    """QA-007: Metadatos debe incluir tiempo_estimado_estudio_minutos y conceptos_clave."""
++    meta = Metadatos(
++        documento_id="doc-qa-007",
++        perfil_destinatario=PerfilDestinatario.junior,
++        formato_salida=FormatoSalida.tutorial,
++        nicho=Nicho.fintech,
++        nivel_detalle=NivelDetalle.tecnico,
++        fragmentos_usados=3,
++        tiempo_estimado_estudio_minutos=15,
++        conceptos_clave=["Riesgo Crediticio", "Scoring"],
++    )
++    assert meta.tiempo_estimado_estudio_minutos == 15
++    assert meta.conceptos_clave == ["Riesgo Crediticio", "Scoring"]
++    assert isinstance(meta.tiempo_estimado_estudio_minutos, int)
++    assert isinstance(meta.conceptos_clave, list)
++
++
++def test_metadatos_valores_por_defecto_seguros():
++    """QA-007: Metadatos debe proveer valores por defecto seguros e independientes (sin mutabilidad compartida)."""
++    meta1 = Metadatos(
++        documento_id="doc-1",
++        perfil_destinatario=PerfilDestinatario.principiante,
++        formato_salida=FormatoSalida.flashcards,
++        nicho=Nicho.general,
++        nivel_detalle=NivelDetalle.didactico,
++        fragmentos_usados=1,
++    )
++    meta2 = Metadatos(
++        documento_id="doc-2",
++        perfil_destinatario=PerfilDestinatario.principiante,
++        formato_salida=FormatoSalida.flashcards,
++        nicho=Nicho.general,
++        nivel_detalle=NivelDetalle.didactico,
++        fragmentos_usados=1,
++    )
++    assert meta1.tiempo_estimado_estudio_minutos >= 1
++    assert meta1.conceptos_clave == []
++    meta1.conceptos_clave.append("Concepto A")
++    assert meta2.conceptos_clave == []  # Evita mutabilidad compartida
++
++
++def test_metadatos_tiempo_estudio_invalido():
++    """QA-007: tiempo_estimado_estudio_minutos debe ser mayor o igual a 1."""
++    with pytest.raises(ValidationError):
++        Metadatos(
++            documento_id="doc-invalid",
++            perfil_destinatario=PerfilDestinatario.principiante,
++            formato_salida=FormatoSalida.tutorial,
++            nicho=Nicho.general,
++            nivel_detalle=NivelDetalle.didactico,
++            fragmentos_usados=1,
++            tiempo_estimado_estudio_minutos=0,
++        )
++

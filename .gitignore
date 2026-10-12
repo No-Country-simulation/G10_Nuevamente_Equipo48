@@ -1,0 +1,29 @@
+# Bytecode y cachés de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+backend/backend/.venv/
+
+# Pruebas, cobertura y testing basado en propiedades
+.pytest_cache/
+.coverage
+htmlcov/
+.hypothesis/
+backend/backend/.hypothesis/
+
+# Secretos y variables de entorno locales
+.env
+.env.*
+!.env.example
+
+# Cachés de herramientas y sistema operativo
+.DS_Store
+Thumbs.db
+*.exe
+
+*.log

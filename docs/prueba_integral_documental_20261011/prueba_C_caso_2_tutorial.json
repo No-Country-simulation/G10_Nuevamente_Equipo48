@@ -1,0 +1,30 @@
+{
+  "status": "ok",
+  "document_id": "fa3416e6-ecf0-4e53-b575-0afe936d31de",
+  "metadatos": {
+    "documento_id": "fa3416e6-ecf0-4e53-b575-0afe936d31de",
+    "perfil_destinatario": "junior",
+    "formato_salida": "tutorial",
+    "nicho": "general",
+    "nivel_detalle": "intermedio",
+    "timestamp": "2026-10-11T22:13:32.071183Z",
+    "fragmentos_usados": 0,
+    "tiempo_estimado_estudio_minutos": 5,
+    "conceptos_clave": [],
+    "tokens_entrada": 257,
+    "tokens_salida": 65,
+    "latencia_segundos": 3.6344
+  },
+  "contenido_adaptado": "Debido a que los fragmentos del documento fuente proporcionados están completamente vacíos, no es posible generar el tutorial educativo solicitado. \n\nPara poder crear el contenido adaptado con sus requisitos (formato de tutorial, perfil junior y nivel de detalle intermedio), por favor proporciona el texto o la información de origen correspondiente.",
+  "evaluacion_calidad": {
+    "anclaje_fuente_score": 0.0,
+    "fragmentos_evaluados": 0,
+    "nivel_confianza": "bajo"
+  },
+  "fuentes": [],
+  "almacenamiento_oci": {
+    "status_upload": "no_configurado",
+    "url_objeto": null,
+    "detalle": null
+  }
+}

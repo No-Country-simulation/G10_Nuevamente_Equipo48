@@ -1,0 +1,27 @@
+diff --git a/backend/backend/app/main.py b/backend/backend/app/main.py
+index 4eee09e..d0e604c 100644
+--- a/backend/backend/app/main.py
++++ b/backend/backend/app/main.py
+@@ -67,6 +67,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+     app.state.rag_service = RAGService(settings)
+     logger.info("RAGService inicializado.")
+ 
++    # Precarga controlada del corpus verificado APTO (P3.2)
++    try:
++        from app.services.corpus_loader import preload_verified_corpus
++        preload_summary = preload_verified_corpus(
++            rag_service=app.state.rag_service,
++            document_service=app.state.document_service,
++        )
++        logger.info(
++            "Precarga de corpus completada: %d cargados, %d omitidos existentes, %d errores.",
++            preload_summary.cargados,
++            preload_summary.omitidos_existentes,
++            preload_summary.errores,
++        )
++    except Exception as exc:
++        logger.warning("Fallo no crítico durante la precarga del corpus inicial: %s", exc)
++
+     # LLMService puede lanzar ConfigurationError si LLM_PROVIDER es inválido.
+     # En ese caso, registramos el error pero NO bloqueamos el arranque:
+     # el endpoint de adaptación responderá con 503 si se intenta usar el LLM.

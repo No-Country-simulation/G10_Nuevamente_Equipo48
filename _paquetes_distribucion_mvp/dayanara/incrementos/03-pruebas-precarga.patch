@@ -1,0 +1,409 @@
+diff --git a/backend/backend/tests/test_corpus_loader.py b/backend/backend/tests/test_corpus_loader.py
+new file mode 100644
+index 0000000..c8fdbf5
+--- /dev/null
++++ b/backend/backend/tests/test_corpus_loader.py
+@@ -0,0 +1,403 @@
++"""
++Pruebas automatizadas exhaustivas para la precarga del corpus verificado APTO (P3.2 / P3.2.1).
++
++Cobertura:
++1. Exclusión estricta de documentos con clasificación distinta de APTO.
++2. Procesamiento completo del texto extraído (sin truncamiento arbitrario).
++3. Conservación del identificador documental y metadatos de los fragmentos indexados.
++4. Idempotencia y omisión de documentos ya presentes en el índice.
++5. Manejo tolerante de archivos ausentes, ilegibles o con texto vacío.
++6. Manejo de excepciones en la ingesta y su efecto exacto sobre el resumen y reporte.
++7. Análisis del riesgo de ingesta parcial / falla a mitad de procesamiento.
++8. Comportamiento seguro cuando no existe el directorio del corpus.
++9. Uso de la misma instancia de RAG compartida por FastAPI en app.state.
++10. Ausencia total de requerimiento de LLM o LLM_API_KEY.
++11. Verificación del orden y ciclo de vida de inicialización en lifespan de FastAPI.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import pytest
++from starlette.testclient import TestClient
++
++from app.core.config import Settings
++from app.main import app, lifespan
++from app.services.corpus_loader import (
++    CorpusDocumentSpec,
++    PreloadSummary,
++    VERIFIED_APTO_CORPUS,
++    find_corpus_root,
++    preload_verified_corpus,
++)
++from app.services.document_service import DocumentService
++from app.services.rag_service import RAGService
++
++
++@pytest.fixture
++def test_settings() -> Settings:
++    """Configuración controlada de prueba para RAGService."""
++    return Settings(
++        CHUNK_SIZE=500,
++        CHUNK_OVERLAP=50,
++        TOP_K_DEFAULT=3,
++        LLM_PROVIDER="mock",
++        LLM_MODEL="mock-model",
++    )
++
++
++@pytest.fixture
++def rag_service(test_settings: Settings) -> RAGService:
++    """Instancia limpia de RAGService para pruebas unitarias."""
++    return RAGService(test_settings)
++
++
++@pytest.fixture
++def doc_service() -> DocumentService:
++    """Instancia de DocumentService para pruebas."""
++    return DocumentService()
++
++
++# ---------------------------------------------------------------------------
++# 1. Catálogo y especificaciones de auditoría
++# ---------------------------------------------------------------------------
++
++
++def test_verified_apto_catalog_specifications():
++    """El catálogo estricto VERIFIED_APTO_CORPUS debe contener solo documentos APTO respaldados."""
++    assert len(VERIFIED_APTO_CORPUS) >= 1
++    for spec in VERIFIED_APTO_CORPUS:
++        assert spec.estado_auditoria == "APTO"
++        assert spec.documento_id.startswith("NM-")
++        assert spec.ruta_relativa.endswith(".pdf")
++
++
++def test_find_corpus_root_locates_existing_dir():
++    """find_corpus_root debe localizar la carpeta real del corpus si existe."""
++    root = find_corpus_root()
++    if root is not None:
++        assert root.is_dir()
++        assert (root / VERIFIED_APTO_CORPUS[0].ruta_relativa).exists()
++
++
++def test_preload_filters_out_non_apto_documents(rag_service: RAGService, tmp_path: Path):
++    """Documentos con estado diferente de APTO deben ser omitidos sin indexar."""
++    fake_pdf = tmp_path / "fake.pdf"
++    fake_pdf.write_bytes(b"%PDF-1.4 dummy content")
++
++    mock_doc_service = MagicMock(spec=DocumentService)
++    mock_doc_service.extract_text.return_value = "Contenido dummy extraido de prueba"
++
++    test_catalog = [
++        CorpusDocumentSpec("NM-TEST-1", "fake.pdf", "Doc 1", "APTO_CON_REVISIÓN", "Desc 1"),
++        CorpusDocumentSpec("NM-TEST-2", "fake.pdf", "Doc 2", "NO_APTO", "Desc 2"),
++        CorpusDocumentSpec("NM-TEST-3", "fake.pdf", "Doc 3", "APTO", "Desc 3"),
++    ]
++
++    summary = preload_verified_corpus(
++        rag_service=rag_service,
++        document_service=mock_doc_service,
++        corpus_root=tmp_path,
++        catalog=test_catalog,
++    )
++
++    assert summary.total_catalogo == 3
++    assert summary.omitidos_no_aptos == 2
++    assert summary.cargados == 1
++    assert summary.documentos_cargados == ["NM-TEST-3"]
++    assert rag_service.document_exists("NM-TEST-3") is True
++    assert rag_service.document_exists("NM-TEST-1") is False
++    assert rag_service.document_exists("NM-TEST-2") is False
++
++
++# ---------------------------------------------------------------------------
++# 2. Procesamiento completo, conservación de metadatos y trazabilidad
++# ---------------------------------------------------------------------------
++
++
++def test_preload_preserves_full_text_and_chunk_metadata(rag_service: RAGService, tmp_path: Path):
++    """Verifica que el texto extraído se procesa completo y los chunks retienen sus metadatos."""
++    fake_pdf = tmp_path / "doc_extenso.pdf"
++    fake_pdf.write_bytes(b"%PDF-1.4 extenso")
++
++    # Texto amplio con múltiples párrafos
++    parrafos = [f"Párrafo de prueba número {i} con conceptos pedagógicos relevantes." for i in range(50)]
++    texto_largo = "\n\n".join(parrafos)
++
++    mock_doc_service = MagicMock(spec=DocumentService)
++    mock_doc_service.extract_text.return_value = texto_largo
++
++    catalog = [
++        CorpusDocumentSpec("NM-EXT-01", "doc_extenso.pdf", "Doc Extenso", "APTO", "Desc Extensa"),
++    ]
++
++    summary = preload_verified_corpus(
++        rag_service=rag_service,
++        document_service=mock_doc_service,
++        corpus_root=tmp_path,
++        catalog=catalog,
++    )
++
++    assert summary.cargados == 1
++    assert summary.documentos_cargados == ["NM-EXT-01"]
++
++    # Verificar metadatos y chunks en RAGService
++    doc_chunks = [c for c in rag_service._chunks if c.documento_id == "NM-EXT-01"]
++    assert len(doc_chunks) > 1
++    for idx, chunk in enumerate(doc_chunks):
++        assert chunk.documento_id == "NM-EXT-01"
++        assert chunk.posicion == idx
++        assert chunk.chunk_id is not None
++        assert len(chunk.texto.strip()) > 0
++
++
++# ---------------------------------------------------------------------------
++# 3. Idempotencia y omisión de documentos existentes
++# ---------------------------------------------------------------------------
++
++
++def test_preload_idempotency(rag_service: RAGService, tmp_path: Path):
++    """Ejecutar la precarga dos veces no duplica documentos ni chunks en el índice."""
++    fake_pdf = tmp_path / "apto.pdf"
++    fake_pdf.write_bytes(b"%PDF-1.4 dummy content")
++
++    mock_doc_service = MagicMock(spec=DocumentService)
++    mock_doc_service.extract_text.return_value = "Texto educativo completo para indexar en RAG. " * 20
++
++    catalog = [
++        CorpusDocumentSpec("NM-IDEM-1", "apto.pdf", "Doc Idem", "APTO", "Desc"),
++    ]
++
++    # Primera ejecución
++    summary1 = preload_verified_corpus(
++        rag_service=rag_service,
++        document_service=mock_doc_service,
++        corpus_root=tmp_path,
++        catalog=catalog,
++    )
++    assert summary1.cargados == 1
++    assert summary1.omitidos_existentes == 0
++    total_chunks_inicial = rag_service._index.ntotal
++    assert total_chunks_inicial > 0
++
++    # Segunda ejecución con el mismo catálogo y rag_service
++    summary2 = preload_verified_corpus(
++        rag_service=rag_service,
++        document_service=mock_doc_service,
++        corpus_root=tmp_path,
++        catalog=catalog,
++    )
++    assert summary2.cargados == 0
++    assert summary2.omitidos_existentes == 1
++    assert summary2.errores == 0
++
++    # Comprobar que no hubo adiciones en FAISS
++    assert rag_service._index.ntotal == total_chunks_inicial
++
++
++# ---------------------------------------------------------------------------
++# 4. Manejo de fallos: archivos ausentes, texto vacío y excepciones de extracción
++# ---------------------------------------------------------------------------
++
++
++def test_preload_handles_missing_files_gracefully(rag_service: RAGService, tmp_path: Path):
++    """Archivos faltantes físicos se registran en errores sin abortar la ejecución de los demás."""
++    existing_pdf = tmp_path / "existente.pdf"
++    existing_pdf.write_bytes(b"%PDF-1.4 content")
++
++    mock_doc_service = MagicMock(spec=DocumentService)
++    mock_doc_service.extract_text.return_value = "Texto de documento existente"
++
++    catalog = [
++        CorpusDocumentSpec("NM-MISS-1", "no_existe.pdf", "Inexistente", "APTO", "Desc"),
++        CorpusDocumentSpec("NM-OK-1", "existente.pdf", "Existente", "APTO", "Desc"),
++    ]
++
++    summary = preload_verified_corpus(
++        rag_service=rag_service,
++        document_service=mock_doc_service,
++        corpus_root=tmp_path,
++        catalog=catalog,
++    )
++
++    assert summary.cargados == 1
++    assert summary.errores == 1
++    assert "NM-MISS-1" in summary.documentos_fallidos
++    assert "NM-OK-1" in summary.documentos_cargados
++    assert rag_service.document_exists("NM-OK-1") is True
++
++
++def test_preload_handles_empty_and_whitespace_text(rag_service: RAGService, tmp_path: Path):
++    """Si la extracción retorna texto vacío o espacios, se registra error y no se reporta cargado."""
++    empty_pdf = tmp_path / "vacio.pdf"
++    empty_pdf.write_bytes(b"%PDF-1.4 empty")
++
++    mock_doc_service = MagicMock(spec=DocumentService)
++    mock_doc_service.extract_text.return_value = "   \n\t  "
++
++    catalog = [
++        CorpusDocumentSpec("NM-EMPTY-1", "vacio.pdf", "Doc Vacio", "APTO", "Desc"),
++    ]
++
++    summary = preload_verified_corpus(
++        rag_service=rag_service,
++        document_service=mock_doc_service,
++        corpus_root=tmp_path,
++        catalog=catalog,
++    )
++
++    assert summary.cargados == 0
++    assert summary.errores == 1
++    assert "NM-EMPTY-1" in summary.documentos_fallidos
++    assert "NM-EMPTY-1" not in summary.documentos_cargados
++    assert rag_service.document_exists("NM-EMPTY-1") is False
++
++
++def test_preload_handles_extraction_exception(rag_service: RAGService, tmp_path: Path):
++    """Si DocumentService lanza una excepción al extraer, se registra en fallidos y el balance es consistente."""
++    corrupt_pdf = tmp_path / "corrupto.pdf"
++    corrupt_pdf.write_bytes(b"bad binary")
++
++    mock_doc_service = MagicMock(spec=DocumentService)
++    mock_doc_service.extract_text.side_effect = RuntimeError("PDF corrupto o ilegible")
++
++    catalog = [
++        CorpusDocumentSpec("NM-CORRUPT-1", "corrupto.pdf", "Doc Corrupto", "APTO", "Desc"),
++    ]
++
++    summary = preload_verified_corpus(
++        rag_service=rag_service,
++        document_service=mock_doc_service,
++        corpus_root=tmp_path,
++        catalog=catalog,
++    )
++
++    assert summary.cargados == 0
++    assert summary.errores == 1
++    assert "NM-CORRUPT-1" in summary.documentos_fallidos
++    assert "NM-CORRUPT-1" not in summary.documentos_cargados
++
++
++def test_preload_handles_nonexistent_corpus_directory(rag_service: RAGService, doc_service: DocumentService, tmp_path: Path):
++    """Si el directorio del corpus no existe, retorna balance seguro con 0 cargados sin fallar."""
++    fake_dir = tmp_path / "directorio_que_no_existe"
++
++    summary = preload_verified_corpus(
++        rag_service=rag_service,
++        document_service=doc_service,
++        corpus_root=fake_dir,
++    )
++
++    assert summary.cargados == 0
++    assert summary.errores == 0
++
++
++# ---------------------------------------------------------------------------
++# 5. Ingesta fallida y riesgo de estado parcial
++# ---------------------------------------------------------------------------
++
++
++def test_preload_handles_ingestion_failure_and_summary_consistency(rag_service: RAGService, tmp_path: Path):
++    """
++    Si ingest_document falla (p.ej. error al generar embeddings o FAISS), el documento
++    debe registrarse como error, agregarse a documentos_fallidos y NO a documentos_cargados.
++    """
++    fake_pdf = tmp_path / "doc_fail.pdf"
++    fake_pdf.write_bytes(b"%PDF-1.4 test")
++
++    mock_doc = MagicMock(spec=DocumentService)
++    mock_doc.extract_text.return_value = "Texto válido para ingestar"
++
++    mock_rag = MagicMock(spec=RAGService)
++    mock_rag.document_exists.return_value = False
++    mock_rag.ingest_document.side_effect = RuntimeError("Fallo interno en FAISS o embeddings")
++
++    catalog = [
++        CorpusDocumentSpec("NM-FAIL-1", "doc_fail.pdf", "Fallo Ingesta", "APTO", "Desc"),
++    ]
++
++    summary = preload_verified_corpus(
++        rag_service=mock_rag,
++        document_service=mock_doc,
++        corpus_root=tmp_path,
++        catalog=catalog,
++    )
++
++    assert summary.cargados == 0
++    assert summary.errores == 1
++    assert "NM-FAIL-1" in summary.documentos_fallidos
++    assert "NM-FAIL-1" not in summary.documentos_cargados
++
++
++# ---------------------------------------------------------------------------
++# 6. Ausencia de LLM y verificación de retrieval semántico
++# ---------------------------------------------------------------------------
++
++
++def test_preload_no_llm_required(rag_service: RAGService, tmp_path: Path):
++    """La precarga no debe requerir llaves de LLM ni conectarse a servicios externos."""
++    fake_pdf = tmp_path / "doc.pdf"
++    fake_pdf.write_bytes(b"%PDF-1.4 test")
++
++    mock_doc = MagicMock(spec=DocumentService)
++    mock_doc.extract_text.return_value = "Contenido de prueba sintético sin LLM."
++
++    catalog = [
++        CorpusDocumentSpec("NM-NO-LLM", "doc.pdf", "Doc Sin LLM", "APTO", "Desc"),
++    ]
++
++    summary = preload_verified_corpus(
++        rag_service=rag_service,
++        document_service=mock_doc,
++        corpus_root=tmp_path,
++        catalog=catalog,
++    )
++    assert summary.cargados == 1
++    retrieved = rag_service.retrieve(documento_id="NM-NO-LLM", query="prueba sintético", top_k=1)
++    assert len(retrieved) > 0
++    assert retrieved[0].documento_id == "NM-NO-LLM"
++
++
++# ---------------------------------------------------------------------------
++# 7. Verificación del ciclo de vida (Lifespan) de FastAPI
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.asyncio
++async def test_fastapi_lifespan_initializes_services_and_preloads():
++    """
++    Verifica que el lifespan de FastAPI inicializa todos los servicios en el orden correcto
++    y ejecuta la precarga del corpus sobre la instancia exacta app.state.rag_service.
++    """
++    mock_preload_summary = PreloadSummary(
++        total_catalogo=3,
++        cargados=3,
++        omitidos_existentes=0,
++        omitidos_no_aptos=0,
++        errores=0,
++        documentos_cargados=["NM-006", "NM-015", "NM-004"],
++        documentos_fallidos=[],
++    )
++
++    # Monitorear la llamada a preload_verified_corpus durante el lifespan real
++    with patch(
++        "app.services.corpus_loader.preload_verified_corpus",
++        return_value=mock_preload_summary,
++    ) as mock_preload_call:
++        async with lifespan(app):
++            # 1. Comprobar que los servicios existen en app.state
++            assert hasattr(app.state, "document_service")
++            assert isinstance(app.state.document_service, DocumentService)
++
++            assert hasattr(app.state, "rag_service")
++            assert isinstance(app.state.rag_service, RAGService)
++
++            assert hasattr(app.state, "oci_service")
++
++            # 2. Comprobar que preload_verified_corpus fue invocado exactamente con la instancia de app.state
++            mock_preload_call.assert_called_once()
++            called_kwargs = mock_preload_call.call_args.kwargs
++            assert called_kwargs["rag_service"] is app.state.rag_service
++            assert called_kwargs["document_service"] is app.state.document_service

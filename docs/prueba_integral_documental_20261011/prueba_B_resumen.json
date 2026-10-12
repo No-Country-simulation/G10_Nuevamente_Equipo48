@@ -1,0 +1,30 @@
+{
+  "prueba": "PRUEBA_B",
+  "identificador_asignado": "EXT-01",
+  "documento_id_backend": "fa3416e6-ecf0-4e53-b575-0afe936d31de",
+  "archivo": "EXT-01_Machine_Learning_Top_Physics_CERN_2023.pdf",
+  "url_origen": "https://arxiv.org/pdf/2301.09534.pdf",
+  "entidad_responsable": "CERN / University of Hamburg (Philip Keicher) / arXiv",
+  "licencia": "Creative Commons Attribution 4.0 International (CC-BY-4.0)",
+  "tamano_bytes": 1145955,
+  "sha256": "6fb7d52df4589492e0b935370689acb6c991bf25a9793281722d90a6280639aa",
+  "paginas": 8,
+  "caracteres_extraidos": 17991,
+  "clasificacion": "APTO",
+  "status_upload": 200,
+  "chunks_indexados": 12,
+  "status_adaptacion": 200,
+  "anclaje_score": 0.0,
+  "nivel_confianza": "bajo",
+  "fuentes_usadas": 0,
+  "latencia_llm_backend": 3.7009,
+  "cronometria": {
+    "1_busqueda_descarga": 0.8080785999918589,
+    "2_validacion_calidad_licencia": 0.157745899996371,
+    "3_clasificacion_admisibilidad": 3.00002284348011e-07,
+    "4_a_7_ingesta_vectorizacion_faiss": 0.830428999994183,
+    "8_9_recuperacion_y_generacion_llm": 3.7402176999894436,
+    "10_verificacion": 2.4999899324029684e-06,
+    "total_flujo_prueba_B": 13.53734429999895
+  }
+}
