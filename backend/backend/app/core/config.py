@@ -67,7 +67,11 @@ class Settings(BaseSettings):
     # Configuración de pydantic-settings
     # -------------------------------------------------------------------------
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=[
+            ".env",
+            "../.env",
+            "../../.env",
+        ],
         extra="ignore",
         # Permite sobreescribir valores con variables de entorno del sistema
         env_file_encoding="utf-8",

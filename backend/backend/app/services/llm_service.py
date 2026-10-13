@@ -260,7 +260,10 @@ class LLMService:
         for intento in range(1, MAX_RETRIES + 1):
             t_inicio_llamada = time.time()
             try:
-                response = modelo.generate_content(full_prompt)
+                response = modelo.generate_content(
+                    full_prompt,
+                    request_options={"timeout": 60},
+                )
                 latencia_llamada = round(time.time() - t_inicio_llamada, 4)
                 latencia_total = round(time.time() - t_inicio_total, 4)
 

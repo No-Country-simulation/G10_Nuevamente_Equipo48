@@ -72,14 +72,14 @@ def find_corpus_root() -> Path | None:
     Localiza la ruta del directorio de documentos del corpus verificado.
     Busca recursivamente hacia arriba desde la ubicación actual.
     """
+    repo_root = Path(__file__).resolve().parents[4]
     candidatos = [
         # Ruta directa relativa a la raíz del repositorio
-        Path(__file__).resolve().parent.parent.parent.parent / "_revision_corpus_fase05" / "documentos",
-        # Ruta relativa al directorio de trabajo actual
+        repo_root / "_revision_corpus_fase05" / "documentos",
+        # Rutas relativas al directorio de trabajo actual
         Path.cwd() / "_revision_corpus_fase05" / "documentos",
         Path.cwd().parent / "_revision_corpus_fase05" / "documentos",
         Path.cwd().parent.parent / "_revision_corpus_fase05" / "documentos",
-        Path("C:/PROYECTOS/G10_Nuevamente_Equipo48/_revision_corpus_fase05/documentos"),
     ]
     for ruta in candidatos:
         if ruta.is_dir():
@@ -186,3 +186,80 @@ def preload_verified_corpus(
         summary.errores,
     )
     return summary
+
+
+def get_corpus_status(rag_service: RAGService | None = None) -> list[dict]:
+    """
+    Retorna el estado consolidado de los documentos del inventario oficial de Data Analytics,
+    indicando para cada uno si está disponible físicamente, su aptitud y si se encuentra
+    actualmente indexado en el motor RAG.
+    """
+    import csv
+
+    corpus_root = find_corpus_root()
+    repo_root = Path(__file__).resolve().parents[4]
+    csv_candidates = [
+        repo_root / "data_analyst" / "inventario" / "inventario_corpus.csv",
+        Path.cwd() / "data_analyst" / "inventario" / "inventario_corpus.csv",
+        Path.cwd().parent / "data_analyst" / "inventario" / "inventario_corpus.csv",
+        Path.cwd().parent.parent / "data_analyst" / "inventario" / "inventario_corpus.csv",
+    ]
+
+    inventory_rows: list[dict] = []
+    for csv_path in csv_candidates:
+        if csv_path.is_file():
+            try:
+                with open(csv_path, encoding="utf-8-sig") as f:
+                    inventory_rows = list(csv.DictReader(f))
+                break
+            except Exception as exc:
+                logger.warning("Error leyendo inventario CSV %s: %s", csv_path, exc)
+
+    indexed_docs = rag_service.list_indexed_documents() if rag_service else {}
+
+    results = []
+    for row in inventory_rows:
+        doc_id = row.get("identificador_documento", "").strip()
+        titulo = row.get("titulo", "").strip()
+        eval_res = row.get("resultado_evaluacion", "PENDIENTE").strip()
+        licencia = row.get("licencia", "No especificada").strip()
+        fuente = row.get("fuente", "").strip()
+
+        # Determinar existencia física del archivo
+        archivo_fisico = False
+        ruta_archivo = None
+        if corpus_root and corpus_root.is_dir():
+            matches = list(corpus_root.glob(f"{doc_id}*/*.*"))
+            # Filtrar directorios o archivos git
+            file_matches = [m for m in matches if m.is_file() and not m.name.startswith(".")]
+            if file_matches:
+                archivo_fisico = True
+                ruta_archivo = str(file_matches[0].name)
+
+        chunks_count = indexed_docs.get(doc_id, 0)
+        esta_procesado = chunks_count > 0
+
+        # Estado del documento
+        if esta_procesado:
+            estado_flujo = "PROCESADO"
+        elif archivo_fisico and eval_res == "APTO":
+            estado_flujo = "DISPONIBLE_APTO"
+        elif archivo_fisico:
+            estado_flujo = f"DISPONIBLE_{eval_res}"
+        else:
+            estado_flujo = f"REGISTRADO_{eval_res}"
+
+        results.append({
+            "identificador_documento": doc_id,
+            "titulo": titulo,
+            "resultado_evaluacion": eval_res,
+            "licencia": licencia,
+            "fuente": fuente,
+            "archivo_disponible": archivo_fisico,
+            "nombre_archivo": ruta_archivo,
+            "esta_procesado": esta_procesado,
+            "chunks_indexados": chunks_count,
+            "estado_flujo": estado_flujo,
+        })
+
+    return results

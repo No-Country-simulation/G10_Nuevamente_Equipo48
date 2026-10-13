@@ -141,6 +141,35 @@ def request_adaptation(
     return response.json()
 
 
+def fetch_corpus_documents(base_url: str, timeout: int = 10) -> list[dict]:
+    """
+    Obtiene la lista consolidada de documentos del corpus desde GET /api/v1/files/corpus.
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/files/corpus"
+    try:
+        resp = requests.get(url, timeout=timeout)
+        if resp.ok:
+            return resp.json()
+        return []
+    except Exception:
+        return []
+
+
+def ingest_corpus_document(base_url: str, documento_id: str, timeout: int = 30) -> dict:
+    """
+    Solicita la ingesta bajo demanda de un documento del corpus a POST /api/v1/files/corpus/{id}/ingest.
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/files/corpus/{documento_id}/ingest"
+    resp = requests.post(url, timeout=timeout)
+    if not resp.ok:
+        error_msg = extract_error_message(resp)
+        raise requests.exceptions.HTTPError(
+            f"Fallo al indexar documento del corpus ({resp.status_code}): {error_msg}",
+            response=resp,
+        )
+    return resp.json()
+
+
 # --- INTERFAZ STREAMLIT ---
 
 def main() -> None:
@@ -352,20 +381,62 @@ def main() -> None:
     # --- PANEL DE CONTROL LATERAL ---
     st.sidebar.markdown("## ⚙️ Panel de Control")
     st.sidebar.markdown(
-        "<p style='font-size: 0.85rem; color: #94a3b8;'>Configura los parámetros"
-        " de transformación para el documento.</p>",
+        "<p style='font-size: 0.85rem; color: #94a3b8;'>Selecciona un documento del corpus"
+        " o sube un archivo nuevo para su transformación.</p>",
         unsafe_allow_html=True,
     )
 
-    archivo_subido = st.sidebar.file_uploader(
-        "📁 Sube tu archivo", type=["pdf", "txt", "md"]
-    )
-    st.sidebar.markdown(
-        "<p style='font-size: 0.75rem; color: #94a3b8; margin-top: -5px;'>Máx. 50MB"
-        " • PDF, TXT, MD</p>",
-        unsafe_allow_html=True,
+    modo_origen = st.sidebar.radio(
+        "Origen del documento:",
+        ["📚 Catálogo del Corpus", "📁 Cargar Archivo Nuevo"],
+        index=0,
     )
 
+    selected_corpus_id = None
+    archivo_subido = None
+
+    if modo_origen == "📚 Catálogo del Corpus":
+        corpus_list = fetch_corpus_documents(API_BASE_URL)
+        if not corpus_list:
+            st.sidebar.warning("⚠️ No se pudo cargar el catálogo del corpus desde el backend.")
+            doc_display_options = ["(Sin catálogo disponible)"]
+        else:
+            # Formatear opciones: id - título - [Estado]
+            doc_display_options = []
+            for doc in corpus_list:
+                status_icon = "🟢" if doc.get("esta_procesado") else ("🟡" if doc.get("archivo_disponible") and doc.get("resultado_evaluacion") == "APTO" else "⚪")
+                label = f"{status_icon} [{doc.get('identificador_documento')}] {doc.get('titulo')}"
+                doc_display_options.append(label)
+
+        selected_option = st.sidebar.selectbox("Documento del corpus:", doc_display_options)
+
+        if corpus_list and selected_option and "[" in selected_option:
+            raw_id = selected_option.split("[")[1].split("]")[0]
+            selected_corpus_id = raw_id
+            doc_data = next((d for d in corpus_list if d.get("identificador_documento") == raw_id), None)
+            if doc_data:
+                eval_tag = doc_data.get("resultado_evaluacion", "")
+                proc_tag = "Indexado en FAISS" if doc_data.get("esta_procesado") else "Pendiente de indexar"
+                lic_tag = doc_data.get("licencia", "")
+                st.sidebar.markdown(
+                    f"<div style='font-size: 0.75rem; color: #94a3b8; background: #11141d; padding: 8px; border-radius: 8px; margin-top: 4px;'>"
+                    f"<b>Estado:</b> {eval_tag} ({proc_tag})<br>"
+                    f"<b>Licencia:</b> {lic_tag}<br>"
+                    f"<b>Fuente:</b> {doc_data.get('fuente', '')[:45]}..."
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+    else:
+        archivo_subido = st.sidebar.file_uploader(
+            "📁 Sube tu archivo", type=["pdf", "txt", "md"]
+        )
+        st.sidebar.markdown(
+            "<p style='font-size: 0.75rem; color: #94a3b8; margin-top: -5px;'>Máx. 50MB"
+            " • PDF, TXT, MD</p>",
+            unsafe_allow_html=True,
+        )
+
+    st.sidebar.markdown("---")
     perfil_label = st.sidebar.selectbox(
         "Perfil del destinatario:",
         list(PERFIL_OPTIONS.keys()),
@@ -397,26 +468,34 @@ def main() -> None:
 
     # --- FLUJO PRINCIPAL DE PROCESAMIENTO E INTEGRACIÓN CON FASTAPI ---
     if generar_btn:
-        if archivo_subido is None:
+        if modo_origen == "📁 Cargar Archivo Nuevo" and archivo_subido is None:
             st.error(
                 "⚠️ Por favor, sube un documento técnico (.pdf, .txt o .md) en la barra lateral para"
                 " iniciar el procesamiento."
             )
+        elif modo_origen == "📚 Catálogo del Corpus" and not selected_corpus_id:
+            st.error("⚠️ Por favor, selecciona un documento válido del catálogo del corpus.")
         else:
-            file_bytes = archivo_subido.getvalue()
-            file_name = archivo_subido.name
+            try:
+                documento_id = None
+                nombre_mostrado = ""
 
-            # Validación inicial de tamaño en cliente (50 MB)
-            if len(file_bytes) > 50 * 1024 * 1024:
-                st.error(
-                    f"⚠️ El archivo '{file_name}' excede el límite máximo permitido de 50 MB "
-                    f"({len(file_bytes) / (1024 * 1024):.2f} MB)."
-                )
-            elif len(file_bytes) == 0:
-                st.error(f"⚠️ El archivo '{file_name}' está vacío. Por favor selecciona un documento válido.")
-            else:
-                try:
-                    # Paso 1: Carga e Ingesta en el backend FAISS
+                # CASO 1: Archivo subido por el usuario
+                if modo_origen == "📁 Cargar Archivo Nuevo":
+                    file_bytes = archivo_subido.getvalue()
+                    file_name = archivo_subido.name
+                    nombre_mostrado = file_name
+
+                    if len(file_bytes) > 50 * 1024 * 1024:
+                        st.error(
+                            f"⚠️ El archivo '{file_name}' excede el límite máximo de 50 MB "
+                            f"({len(file_bytes) / (1024 * 1024):.2f} MB)."
+                        )
+                        return
+                    if len(file_bytes) == 0:
+                        st.error(f"⚠️ El archivo '{file_name}' está vacío. Selecciona un documento válido.")
+                        return
+
                     with st.spinner("📤 Paso 1/2: Subiendo archivo e indexando fragmentos en FAISS..."):
                         upload_res = upload_file_to_backend(
                             base_url=API_BASE_URL,
@@ -424,136 +503,144 @@ def main() -> None:
                             file_bytes=file_bytes,
                             mime_type=archivo_subido.type,
                         )
-
                     documento_id = upload_res.get("documento_id")
                     chunks_indexados = upload_res.get("chunks_indexados", 0)
                     st.toast(f"✅ Ingesta completada ({chunks_indexados} fragmentos indexados)", icon="📦")
 
-                    # Paso 2: Orquestación RAG y Adaptación Educativa
-                    with st.spinner("🧠 Paso 2/2: Orquestando pipeline RAG y generando contenido adaptado..."):
-                        adapt_res = request_adaptation(
-                            base_url=API_BASE_URL,
-                            documento_id=documento_id,
-                            perfil=PERFIL_OPTIONS[perfil_label],
-                            formato=FORMATO_OPTIONS[formato_label],
-                            nicho=NICHO_OPTIONS[nicho_label],
-                            nivel=NIVEL_OPTIONS[nivel_label],
-                        )
+                # CASO 2: Documento seleccionado del corpus oficial
+                else:
+                    documento_id = selected_corpus_id
+                    nombre_mostrado = f"Corpus {documento_id}"
+                    with st.spinner(f"🔍 Paso 1/2: Verificando/Indexando documento '{documento_id}' en FAISS..."):
+                        ingest_res = ingest_corpus_document(API_BASE_URL, documento_id)
+                    chunks_indexados = ingest_res.get("chunks_indexados", 0)
+                    st.toast(f"✅ Documento listo en RAG ({chunks_indexados} fragmentos)", icon="📚")
 
-                    st.success("🎉 ¡Documento procesado y adaptado exitosamente por el motor NuevaMente!")
+                # Paso 2: Orquestación RAG y Adaptación Educativa
+                with st.spinner("🧠 Paso 2/2: Orquestando pipeline RAG y generando contenido adaptado..."):
+                    adapt_res = request_adaptation(
+                        base_url=API_BASE_URL,
+                        documento_id=documento_id,
+                        perfil=PERFIL_OPTIONS[perfil_label],
+                        formato=FORMATO_OPTIONS[formato_label],
+                        nicho=NICHO_OPTIONS[nicho_label],
+                        nivel=NIVEL_OPTIONS[nivel_label],
+                    )
 
-                    # --- RENDERIZADO DE RESULTADOS REALES ---
-                    metadatos = adapt_res.get("metadatos", {})
-                    evaluacion = adapt_res.get("evaluacion_calidad", {})
-                    contenido = adapt_res.get("contenido_adaptado")
-                    fuentes = adapt_res.get("fuentes", [])
-                    oci_info = adapt_res.get("almacenamiento_oci", {})
+                st.success("🎉 ¡Documento procesado y adaptado exitosamente por el motor NuevaMente!")
 
-                    st.markdown("### 📊 Métricas Pedagógicas y Evaluación")
-                    c1, c2, c3, c4 = st.columns(4)
-                    with c1:
-                        st.metric("Perfil Aplicado", metadatos.get("perfil_destinatario", perfil_label))
-                    with c2:
-                        tiempo_estudio = metadatos.get("tiempo_estimado_estudio_minutos", 10)
-                        st.metric("Tiempo Estimado", f"{tiempo_estudio} min")
-                    with c3:
-                        score = evaluacion.get("anclaje_fuente_score", 0.0)
-                        confianza = evaluacion.get("nivel_confianza", "N/A")
-                        st.metric("Fidelidad a Fuentes", f"{score:.2f}", help=f"Nivel de confianza: {confianza}")
-                    with c4:
-                        st.metric("Fragmentos Usados", f"{metadatos.get('fragmentos_usados', len(fuentes))}")
+                # --- RENDERIZADO DE RESULTADOS REALES ---
+                metadatos = adapt_res.get("metadatos", {})
+                evaluacion = adapt_res.get("evaluacion_calidad", {})
+                contenido = adapt_res.get("contenido_adaptado")
+                fuentes = adapt_res.get("fuentes", [])
+                oci_info = adapt_res.get("almacenamiento_oci", {})
 
-                    # Conceptos clave identificados (QA-007)
-                    conceptos_clave = metadatos.get("conceptos_clave", [])
-                    if conceptos_clave:
-                        tags = " • ".join(f"`{c}`" for c in conceptos_clave)
-                        st.markdown(f"**🏷️ Conceptos Clave:** {tags}")
+                st.markdown("### 📊 Métricas Pedagógicas y Evaluación")
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric("Perfil Aplicado", metadatos.get("perfil_destinatario", perfil_label))
+                with c2:
+                    tiempo_estudio = metadatos.get("tiempo_estimado_estudio_minutos", 10)
+                    st.metric("Tiempo Estimado", f"{tiempo_estudio} min")
+                with c3:
+                    score = evaluacion.get("anclaje_fuente_score", 0.0)
+                    confianza = evaluacion.get("nivel_confianza", "N/A")
+                    st.metric("Fidelidad a Fuentes", f"{score:.2f}", help=f"Nivel de confianza: {confianza}")
+                with c4:
+                    st.metric("Fragmentos Usados", f"{metadatos.get('fragmentos_usados', len(fuentes))}")
 
-                    st.markdown("<hr style='border-color: rgba(56, 189, 248, 0.2); margin: 20px 0;'>", unsafe_allow_html=True)
-                    st.markdown(f"### 📚 Contenido Adaptado — {formato_label}")
+                # Conceptos clave identificados (QA-007)
+                conceptos_clave = metadatos.get("conceptos_clave", [])
+                if conceptos_clave:
+                    tags = " • ".join(f"`{c}`" for c in conceptos_clave)
+                    st.markdown(f"**🏷️ Conceptos Clave:** {tags}")
 
-                    # Visualización adaptable según el tipo de dato devuelto
-                    if isinstance(contenido, list):
-                        st.info(f"Se generaron {len(contenido)} elementos para el formato solicitado:")
-                        for idx, item in enumerate(contenido, 1):
-                            if isinstance(item, dict):
-                                titulo_item = (
-                                    item.get("pregunta")
-                                    or item.get("frente")
-                                    or item.get("titulo")
-                                    or f"Elemento #{idx}"
-                                )
-                                with st.expander(f"🔹 {titulo_item}", expanded=(idx == 1)):
-                                    for k, v in item.items():
-                                        if k not in ("pregunta", "frente", "titulo"):
-                                            label = k.replace("_", " ").capitalize()
-                                            st.markdown(f"**{label}:** {v}")
-                            else:
-                                st.markdown(f"- {item}")
-                    elif isinstance(contenido, dict):
-                        with st.expander("Estructura estructurada del contenido", expanded=True):
-                            st.json(contenido)
-                    else:
-                        st.markdown(
-                            f"""
-                            <div class="resultado-card">
-                                <div style="white-space: pre-wrap; font-size: 1rem; line-height: 1.6;">{contenido}</div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+                st.markdown("<hr style='border-color: rgba(56, 189, 248, 0.2); margin: 20px 0;'>", unsafe_allow_html=True)
+                st.markdown(f"### 📚 Contenido Adaptado — {formato_label}")
 
-                    # Persistencia OCI y Descarga
-                    st.markdown("<hr style='border-color: rgba(56, 189, 248, 0.2); margin: 20px 0;'>", unsafe_allow_html=True)
-                    col_oci, col_dl = st.columns(2)
-                    with col_oci:
-                        st.markdown("#### ☁️ Persistencia OCI")
-                        status_oci = oci_info.get("status_upload", "no_configurado")
-                        if status_oci in ("exitoso", "completado"):
-                            st.success(f"Estado: **{status_oci}**")
-                            if oci_info.get("url_objeto"):
-                                st.caption(f"URL: {oci_info.get('url_objeto')}")
-                        elif status_oci == "no_configurado":
-                            st.info("Estado: **no_configurado** (modo degradado local activo)")
+                # Visualización adaptable según el tipo de dato devuelto
+                if isinstance(contenido, list):
+                    st.info(f"Se generaron {len(contenido)} elementos para el formato solicitado:")
+                    for idx, item in enumerate(contenido, 1):
+                        if isinstance(item, dict):
+                            titulo_item = (
+                                item.get("pregunta")
+                                or item.get("frente")
+                                or item.get("titulo")
+                                or f"Elemento #{idx}"
+                            )
+                            with st.expander(f"🔹 {titulo_item}", expanded=(idx == 1)):
+                                for k, v in item.items():
+                                    if k not in ("pregunta", "frente", "titulo"):
+                                        label = k.replace("_", " ").capitalize()
+                                        st.markdown(f"**{label}:** {v}")
                         else:
-                            st.warning(f"Estado: **{status_oci}** ({oci_info.get('detalle', 'Sin detalle')})")
-
-                    with col_dl:
-                        st.markdown("#### 💾 Exportar Resultado")
-                        st.download_button(
-                            label="📥 Descargar Paquete Educativo (JSON)",
-                            data=json.dumps(adapt_res, indent=2, ensure_ascii=False),
-                            file_name=f"nuevamente_adaptacion_{documento_id[:8]}.json",
-                            mime="application/json",
-                        )
-
-                    # Trazabilidad RAG: Fragmentos fuente
-                    if fuentes:
-                        with st.expander(f"🔍 Fragmentos fuente del documento analizado ({len(fuentes)} fragmentos)"):
-                            for f in fuentes:
-                                score_f = f.get("score_relevancia", 0.0)
-                                st.markdown(f"**Fragmento #{f.get('posicion', 0) + 1}** — Relevancia: `{score_f:.4f}`")
-                                st.text(f.get("texto", ""))
-                                st.markdown("---")
-
-                    # Inspección técnica de JSON
-                    with st.expander("🛠️ Ver respuesta JSON bruta de la API"):
-                        st.json(adapt_res)
-
-                except requests.exceptions.ConnectionError:
-                    st.error(
-                        f"🔌 **Error de conexión:** No fue posible conectar con el backend en `{API_BASE_URL}`. "
-                        "Verifica que el servidor FastAPI esté iniciado en esa dirección y puerto."
+                            st.markdown(f"- {item}")
+                elif isinstance(contenido, dict):
+                    with st.expander("Estructura estructurada del contenido", expanded=True):
+                        st.json(contenido)
+                else:
+                    st.markdown(
+                        f"""
+                        <div class="resultado-card">
+                            <div style="white-space: pre-wrap; font-size: 1rem; line-height: 1.6;">{contenido}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-                except requests.exceptions.Timeout:
-                    st.error(
-                        "⏱️ **Tiempo de espera agotado:** La solicitud excedió el tiempo límite configurado. "
-                        "Intenta con un fragmento más corto o verifica la carga del servidor."
+
+                # Persistencia OCI y Descarga
+                st.markdown("<hr style='border-color: rgba(56, 189, 248, 0.2); margin: 20px 0;'>", unsafe_allow_html=True)
+                col_oci, col_dl = st.columns(2)
+                with col_oci:
+                    st.markdown("#### ☁️ Persistencia OCI")
+                    status_oci = oci_info.get("status_upload", "no_configurado")
+                    if status_oci in ("exitoso", "completado"):
+                        st.success(f"Estado: **{status_oci}**")
+                        if oci_info.get("url_objeto"):
+                            st.caption(f"URL: {oci_info.get('url_objeto')}")
+                    elif status_oci == "no_configurado":
+                        st.info("Estado: **no_configurado** (modo degradado local activo)")
+                    else:
+                        st.warning(f"Estado: **{status_oci}** ({oci_info.get('detalle', 'Sin detalle')})")
+
+                with col_dl:
+                    st.markdown("#### 💾 Exportar Resultado")
+                    st.download_button(
+                        label="📥 Descargar Paquete Educativo (JSON)",
+                        data=json.dumps(adapt_res, indent=2, ensure_ascii=False),
+                        file_name=f"nuevamente_adaptacion_{documento_id[:8]}.json",
+                        mime="application/json",
                     )
-                except requests.exceptions.HTTPError as exc:
-                    st.error(f"⚠️ **Error HTTP devuelto por el servidor:** {exc}")
-                except Exception as exc:
-                    st.error(f"❌ **Error inesperado durante la ejecución:** {type(exc).__name__}: {exc}")
+
+                # Trazabilidad RAG: Fragmentos fuente
+                if fuentes:
+                    with st.expander(f"🔍 Fragmentos fuente del documento analizado ({len(fuentes)} fragmentos)"):
+                        for f in fuentes:
+                            score_f = f.get("score_relevancia", 0.0)
+                            st.markdown(f"**Fragmento #{f.get('posicion', 0) + 1}** — Relevancia: `{score_f:.4f}`")
+                            st.text(f.get("texto", ""))
+                            st.markdown("---")
+
+                # Inspección técnica de JSON
+                with st.expander("🛠️ Ver respuesta JSON bruta de la API"):
+                    st.json(adapt_res)
+
+            except requests.exceptions.ConnectionError:
+                st.error(
+                    f"🔌 **Error de conexión:** No fue posible conectar con el backend en `{API_BASE_URL}`. "
+                    "Verifica que el servidor FastAPI esté iniciado en esa dirección y puerto."
+                )
+            except requests.exceptions.Timeout:
+                st.error(
+                    "⏱️ **Tiempo de espera agotado:** La solicitud excedió el tiempo límite configurado. "
+                    "Intenta con un fragmento más corto o verifica la carga del servidor."
+                )
+            except requests.exceptions.HTTPError as exc:
+                st.error(f"⚠️ **Error HTTP devuelto por el servidor:** {exc}")
+            except Exception as exc:
+                st.error(f"❌ **Error inesperado durante la ejecución:** {type(exc).__name__}: {exc}")
 
     else:
         st.markdown(

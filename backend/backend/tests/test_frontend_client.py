@@ -29,6 +29,8 @@ from frontend.app import (
     NIVEL_OPTIONS,
     PERFIL_OPTIONS,
     extract_error_message,
+    fetch_corpus_documents,
+    ingest_corpus_document,
     request_adaptation,
     upload_file_to_backend,
 )
@@ -314,4 +316,38 @@ def test_integracion_flujo_completo_con_testclient(client):
     assert "conceptos_clave" in adapt_data["metadatos"]
     assert "anclaje_fuente_score" in adapt_data["evaluacion_calidad"]
     assert "nivel_confianza" in adapt_data["evaluacion_calidad"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Pruebas de cliente para catálogo e ingesta del corpus
+# ---------------------------------------------------------------------------
+
+def test_fetch_corpus_documents_exitoso():
+    """fetch_corpus_documents debe retornar la lista devuelta por GET /corpus."""
+    mock_resp = MagicMock(spec=requests.Response)
+    mock_resp.ok = True
+    mock_resp.json.return_value = [
+        {"identificador_documento": "NM-006", "titulo": "Manual Ciberseguridad", "estado_flujo": "PROCESADO"}
+    ]
+    with patch("requests.get", return_value=mock_resp) as mock_get:
+        res = fetch_corpus_documents("http://localhost:8000")
+        assert len(res) == 1
+        assert res[0]["identificador_documento"] == "NM-006"
+        mock_get.assert_called_once_with("http://localhost:8000/api/v1/files/corpus", timeout=10)
+
+
+def test_ingest_corpus_document_exitoso():
+    """ingest_corpus_document debe invocar el endpoint POST /corpus/{id}/ingest."""
+    mock_resp = MagicMock(spec=requests.Response)
+    mock_resp.ok = True
+    mock_resp.json.return_value = {
+        "status": "ok",
+        "documento_id": "NM-006",
+        "chunks_indexados": 15,
+    }
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        res = ingest_corpus_document("http://localhost:8000", "NM-006")
+        assert res["status"] == "ok"
+        assert res["chunks_indexados"] == 15
+        mock_post.assert_called_once_with("http://localhost:8000/api/v1/files/corpus/NM-006/ingest", timeout=30)
 

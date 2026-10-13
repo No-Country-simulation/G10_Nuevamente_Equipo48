@@ -313,6 +313,19 @@ class RAGService:
         """
         return any(c.documento_id == documento_id for c in self._chunks)
 
+    def list_indexed_documents(self) -> dict[str, int]:
+        """
+        Retorna un diccionario con los identificadores de documentos actualmente
+        indexados en el motor RAG y la cantidad de chunks de cada uno.
+
+        Returns:
+            Dict[documento_id, num_chunks]
+        """
+        counts: dict[str, int] = {}
+        for c in self._chunks:
+            counts[c.documento_id] = counts.get(c.documento_id, 0) + 1
+        return counts
+
     # ------------------------------------------------------------------
     # ingest_document: ingesta de un documento en el índice FAISS
     # ------------------------------------------------------------------
