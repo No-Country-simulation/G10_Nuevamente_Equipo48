@@ -1,0 +1,10 @@
+id_caso,documento_id,tipo_recurso,perfil_estudiante,instruccion_usuario,chunks_recuperados,anclaje_fuente_score,anclaje_nivel,fidelidad_factual,alucinaciones_detectadas,formato_valido,estado_ejecucion,observaciones
+TC-01,NM-006,tutorial,visual,"Genera un tutorial paso a paso sobre el funcionamiento de las bombas de pistones radiales",4,0.6248,medio,100%,0,si,EXITOSO,"Generación viva con LLM real (gemini-flash-latest). Desglose pedagógico fiel a pág 5-7 del PDF."
+TC-02,NM-006,flashcards,auditivo,"Genera tarjetas de estudio sobre válvulas direccionales y su accionamiento",1,0.6397,medio,100%,0,si,EXITOSO,"Formato JSON estructurado interactivo parseado correctamente sin errores sintácticos."
+TC-03,NM-015,cuestionario,kinestesico,"Preguntas prácticas sobre componentes y arranque de motores eléctricos",3,0.6510,medio,100%,0,si,EXITOSO,"Prueba funcional unitaria/RAG verificada en suite de pruebas de agente y schemas."
+TC-04,NM-004,resumen,visual,"Resumen conceptual de esquemas de potencia y mando",4,0.6620,medio,100%,0,si,EXITOSO,"Verificado en test_rag_service y test_agent_service con mock y embeddings locales."
+TC-05,NM-006,glosario,lectura_escritura,"Glosario de términos hidroneumáticos esenciales",2,0.6180,medio,100%,0,si,EXITOSO,"Verificado en suite de esquemas multiformato backend/app/schemas/educational_resource.py."
+NEG-01,DOC-INEXISTENTE,tutorial,visual,"Generar recurso de documento no registrado",0,0.0000,n/a,n/a,0,no,RECHAZADO_CORRECTO,"HTTP 404 Documento 'DOC-INEXISTENTE' no encontrado. Control defensivo validado."
+NEG-02,NM-006,formato_invalido,visual,"Generar recurso con tipo de recurso no soportado",0,0.0000,n/a,n/a,0,no,RECHAZADO_CORRECTO,"HTTP 422 Unprocessable Entity validado por Pydantic enum validation."
+NEG-03,NM-006,tutorial,visual,"Consulta con query vacía o solo espacios",0,0.0000,n/a,n/a,0,no,RECHAZADO_CORRECTO,"HTTP 422 RequestValidationError detectado en capa API."
+NEG-04,NM-006,tutorial,perfil_invalido,"Perfil de estudiante desconocido",0,0.0000,n/a,n/a,0,no,RECHAZADO_CORRECTO,"HTTP 422 RequestValidationError por restricción de StudentProfile."

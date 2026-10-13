@@ -167,3 +167,120 @@ async def upload_file(
         chunks_indexados=chunks_count,
         oci_status=oci_result.status,
     )
+
+
+@router.get("/corpus", tags=["Documentos"])
+async def listar_documentos_corpus(request: Request):
+    """
+    Lista el inventario completo del corpus documental, diferenciando
+    entre documentos disponibles, documentos procesados e indexados,
+    y documentos registrados pendientes o no aptos.
+    """
+    from app.services.corpus_loader import get_corpus_status
+    rag_service = getattr(request.app.state, "rag_service", None)
+    return get_corpus_status(rag_service)
+
+
+@router.post("/corpus/{documento_id}/ingest", tags=["Documentos"])
+async def ingestar_documento_corpus(documento_id: str, request: Request):
+    """
+    Permite ingestar bajo demanda un documento del corpus disponible y APTO en FAISS,
+    sin necesidad de reiniciar la aplicación ni reconstruirla.
+    """
+    from app.services.corpus_loader import find_corpus_root, get_corpus_status
+
+    rag_service: RAGService = request.app.state.rag_service
+    document_service: DocumentService = request.app.state.document_service
+
+    # 1. Comprobar si ya está indexado
+    if rag_service.document_exists(documento_id):
+        indexed = rag_service.list_indexed_documents()
+        return {
+            "status": "ok",
+            "documento_id": documento_id,
+            "mensaje": f"El documento '{documento_id}' ya se encuentra indexado en FAISS.",
+            "chunks_indexados": indexed.get(documento_id, 0),
+        }
+
+    # 2. Consultar estado en inventario y reglas de aptitud
+    status_list = get_corpus_status(rag_service)
+    doc_meta = next((d for d in status_list if d["identificador_documento"] == documento_id), None)
+
+    if not doc_meta:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": f"Documento '{documento_id}' no encontrado en el catálogo del corpus.",
+                "detalle": "Verifique el identificador con el inventario de Data Analytics.",
+            },
+        )
+
+    if doc_meta["resultado_evaluacion"] != "APTO":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"El documento '{documento_id}' tiene evaluación '{doc_meta['resultado_evaluacion']}'.",
+                "detalle": "Por gobernanza pedagógica, solo los documentos con evaluación APTO pueden ser procesados.",
+            },
+        )
+
+    corpus_root = find_corpus_root()
+    if not corpus_root or not corpus_root.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "Directorio de almacenamiento físico del corpus no encontrado.",
+                "detalle": "No es posible localizar los archivos del corpus en el entorno local.",
+            },
+        )
+
+    matches = list(corpus_root.glob(f"{documento_id}*/*.*"))
+    file_matches = [m for m in matches if m.is_file() and not m.name.startswith(".")]
+
+    if not file_matches:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": f"Archivo físico no encontrado para el documento '{documento_id}'.",
+                "detalle": "El documento está registrado en el inventario pero el archivo local no está presente.",
+            },
+        )
+
+    target_file = file_matches[0]
+    ext = target_file.suffix.lower()
+    mime_map = {
+        ".pdf": "application/pdf",
+        ".md": "text/markdown",
+        ".txt": "text/plain",
+    }
+    mime_type = mime_map.get(ext)
+    if not mime_type:
+        raise HTTPException(
+            status_code=415,
+            detail={
+                "error": f"Formato de archivo '{ext}' no soportado para ingesta automática.",
+                "detalle": "Formatos soportados: PDF, MD, TXT.",
+            },
+        )
+
+    file_bytes = target_file.read_bytes()
+    text = document_service.extract_text(file_bytes, mime_type)
+    if not text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": f"El archivo '{target_file.name}' no contiene texto extraíble.",
+                "detalle": "No se puede indexar un documento vacío.",
+            },
+        )
+
+    chunks_count = rag_service.ingest_document(text, documento_id)
+
+    return {
+        "status": "ok",
+        "documento_id": documento_id,
+        "titulo": doc_meta["titulo"],
+        "filename": target_file.name,
+        "chunks_indexados": chunks_count,
+        "mensaje": f"Documento '{documento_id}' indexado exitosamente en FAISS ({chunks_count} fragmentos).",
+    }

@@ -1,0 +1,6 @@
+id_caso,prueba,documento_id,perfil_destinatario,formato_salida,nivel_detalle,chunks_recuperados,anclaje_fuente_score,nivel_confianza,latencia_llm_s,status_http,control_alucinacion,fidelidad_factual,observaciones
+A-01,Prueba A,COMP-07,principiante,resumen_ejecutivo,didactico,2,0.6729,medio,14.22,200,Aprobado,100%,"Generacion fiel al oficio 195-331352 de SuperSociedades sobre transicion de PTEE hasta mayo 2027."
+B-01,Prueba B,EXT-01,principiante,resumen_ejecutivo,didactico,0,0.0000,bajo,3.70,200,Aprobado (Defensivo),100%,"Alerta de chunks vacios por candidatos=15 en FAISS. El modelo responde defensivamente sin alucinar."
+C-01,Prueba C,EXT-01,principiante,resumen_ejecutivo,didactico,0,0.0000,bajo,3.12,200,Aprobado (Defensivo),100%,"Detecta contexto vacio; solicita texto fuente sin inventar hechos cientificos sobre top quarks."
+C-02,Prueba C,EXT-01,junior,tutorial,intermedio,0,0.0000,bajo,3.48,200,Aprobado (Defensivo),100%,"Responde requiriendo los fragmentos fuente para adaptar formato tutorial con perfil junior."
+C-03,Prueba C,EXT-01,junior,quiz,intermedio,0,0.0000,bajo,3.05,200,Aprobado (Defensivo),100%,"Rechaza generar preguntas de evaluacion sin evidencia documental de soporte; fidelidad factual integra."

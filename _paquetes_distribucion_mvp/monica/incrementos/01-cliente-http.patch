@@ -1,0 +1,156 @@
+diff --git "a/frontend/app.py" "b/frontend/app.py"
+index 8bb2bab..a95399d 100644
+--- "a/frontend/app.py"
++++ "b/frontend/app.py"
+@@ -1,7 +1,149 @@
++import json
+ import os
+-import streamlit as st
++import requests
++
++try:
++    import streamlit as st
++except ImportError:
++    st = None
++
++# --- CONFIGURACIÓN DE CONEXIÓN CON EL BACKEND FASTAPI ---
++API_BASE_URL = (
++    os.getenv("API_BASE_URL") or os.getenv("BACKEND_URL") or "http://localhost:8000"
++)
++TIMEOUT_UPLOAD_SECONDS = 60
++TIMEOUT_ADAPTACION_SECONDS = 360
++
++# Mapeos de opciones visuales a los contratos y Enums exactos de FastAPI
++PERFIL_OPTIONS = {
++    "Principiante / Transición": "principiante",
++    "Desarrollador Junior": "junior",
++    "Líder Técnico / Arquitecto": "lider_tecnico",
++    "Público General / Ejecutivo": "ejecutivo",
++}
++
++FORMATO_OPTIONS = {
++    "Tutorial Paso a Paso": "tutorial",
++    "Flashcards Interactivas": "flashcards",
++    "Quiz con Justificaciones": "quiz",
++    "Resumen Ejecutivo": "resumen_ejecutivo",
++    "Guión de Clase": "guion_clase",
++}
++
++NICHO_OPTIONS = {
++    "General / Transversal": "general",
++    "FinTech y Banca Digital": "fintech",
++    "Salud y Tecnologías Médicas": "salud",
++    "E-Commerce y Retail": "ecommerce",
++}
++
++NIVEL_OPTIONS = {
++    "Didáctico (Fundamentos y conceptos)": "didactico",
++    "Intermedio (Práctico y contextualizado)": "intermedio",
++    "Técnico (Avanzado y exhaustivo)": "tecnico",
++}
++
++
++# --- FUNCIONES DE CLIENTE HTTP Y COMUNICACIÓN CON FASTAPI ---
++
++def extract_error_message(response: requests.Response) -> str:
++    """Extrae un mensaje de error legible del cuerpo de respuesta HTTP."""
++    try:
++        body = response.json()
++        detail = body.get("detail")
++        if isinstance(detail, dict):
++            err = detail.get("error", "")
++            det = detail.get("detalle", "")
++            if err and det:
++                return f"{err} ({det})"
++            return err or det or str(detail)
++        elif isinstance(detail, list):
++            msgs = []
++            for item in detail:
++                if isinstance(item, dict):
++                    loc = " -> ".join(str(x) for x in item.get("loc", []))
++                    msg = item.get("msg", "")
++                    msgs.append(f"{loc}: {msg}")
++            return "; ".join(msgs) if msgs else str(detail)
++        elif detail:
++            return str(detail)
++        elif "error" in body:
++            return str(body["error"])
++        return response.text or f"Código de error HTTP {response.status_code}"
++    except Exception:
++        return response.text or f"Código de error HTTP {response.status_code}"
++
++
++def upload_file_to_backend(
++    base_url: str,
++    filename: str,
++    file_bytes: bytes,
++    mime_type: str | None = None,
++    timeout: int = TIMEOUT_UPLOAD_SECONDS,
++) -> dict:
++    """
++    Envía el archivo seleccionado a POST /api/v1/files/upload de FastAPI.
++    Retorna el diccionario con la respuesta (documento_id, chunks_indexados, etc.).
++    """
++    url = f"{base_url.rstrip('/')}/api/v1/files/upload"
++
++    if not mime_type or mime_type == "application/octet-stream":
++        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
++        mime_map = {
++            "pdf": "application/pdf",
++            "md": "text/markdown",
++            "txt": "text/plain",
++        }
++        mime_type = mime_map.get(ext, "application/octet-stream")
++
++    files = {
++        "file": (filename, file_bytes, mime_type)
++    }
++
++    response = requests.post(url, files=files, timeout=timeout)
++    if not response.ok:
++        error_msg = extract_error_message(response)
++        raise requests.exceptions.HTTPError(
++            f"Fallo en la carga del archivo ({response.status_code}): {error_msg}",
++            response=response,
++        )
++    return response.json()
++
++
++def request_adaptation(
++    base_url: str,
++    documento_id: str,
++    perfil: str,
++    formato: str,
++    nicho: str,
++    nivel: str,
++    timeout: int = TIMEOUT_ADAPTACION_SECONDS,
++) -> dict:
++    """
++    Envía la solicitud de adaptación pedagógica a POST /api/v1/adaptacion.
++    Retorna el diccionario con la respuesta estructurada completa.
++    """
++    url = f"{base_url.rstrip('/')}/api/v1/adaptacion"
++    payload = {
++        "documento_id": documento_id,
++        "perfil_destinatario": perfil,
++        "formato_salida": formato,
++        "nicho": nicho,
++        "nivel_detalle": nivel,
++    }
++    response = requests.post(url, json=payload, timeout=timeout)
++    if not response.ok:
++        error_msg = extract_error_message(response)
++        raise requests.exceptions.HTTPError(
++            f"Fallo en la adaptación pedagógica ({response.status_code}): {error_msg}",
++            response=response,
++        )
++    return response.json()
++
++
++# --- INTERFAZ STREAMLIT ---
++
+ 
+-# Configuración inicial de la página del motor educativo
+ st.set_page_config(
+     page_title="NuevaMente - Motor Educativo", page_icon="🧠", layout="wide"
+ )

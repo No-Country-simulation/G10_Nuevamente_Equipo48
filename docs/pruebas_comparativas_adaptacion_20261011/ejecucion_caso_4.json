@@ -1,0 +1,70 @@
+{
+  "status": "ok",
+  "document_id": "NM-006",
+  "metadatos": {
+    "documento_id": "NM-006",
+    "perfil_destinatario": "lider_tecnico",
+    "formato_salida": "resumen_ejecutivo",
+    "nicho": "general",
+    "nivel_detalle": "tecnico",
+    "timestamp": "2026-10-11T21:40:48.281843Z",
+    "fragmentos_usados": 5,
+    "tiempo_estimado_estudio_minutos": 5,
+    "conceptos_clave": [
+      "Cimientos Sólidos",
+      "Dispositivos\nMantenerse",
+      "Protección de Cuentas",
+      "Dispositivos\nQué",
+      "Kit de Primeros Auxilios \nDigitales",
+      "Manual de \nCampo",
+      "Manual de Ciberseguridad",
+      "Sociedad Civil \nLos"
+    ],
+    "tokens_entrada": 2678,
+    "tokens_salida": 485,
+    "latencia_segundos": 14.0944
+  },
+  "contenido_adaptado": "### Contexto\n\nLa arquitectura de respuesta a incidentes (IR) requiere articular capacidades técnicas internas, escalado externo, medidas legales y protección física. Ante un evento de seguridad, la contención inicial —como la desactivación de cuentas comprometidas— suele recaer en los administradores del sistema locales. Sin embargo, para incidentes complejos se requiere identificar y prenegociar condiciones con expertos informáticos y proveedores de servicios (como hosting) para garantizar soporte especializado sin cargos adicionales.\n\nAsimismo, la respuesta técnica debe respaldarse con la comprensión de las obligaciones legales, evaluación de acuerdos contractuales con terceros (como la notificación obligatoria de filtraciones de datos) y la protección física de los activos para mitigar riesgos como la confiscación o allanamiento de equipos.\n\n### Puntos clave\n\n*   **Matriz de Escalado Técnico y SLAs:** Ejecución de respuestas técnicas inmediatas por administradores internos (ej. desactivación de cuentas) y negociación previa de condiciones contractuales con consultores y proveedores externos para atenciones especializadas.\n*   **Integración de Planes Multidominio:** Estructuración de planes de respuesta que abarquen aspectos técnicos, operativos, legales y de comunicación, apoyándose en marcos de referencia existentes (Kit de Primeros Auxilios Digitales de RaReNet/CiviCERT, Línea de Ayuda de Access Now, entre otros).\n*   **Cultura de Notificación Temprana:** Implementación de políticas que incentiven el reporte inmediato de incidentes (phishing, robo de dispositivos o cuentas pirateadas) evitando represalias para garantizar una reacción rápida.\n*   **Seguridad Física y Minimización de Datos:** Aplicación de controles físicos (cerraduras, vigilancia, destrucción segura de papel) y restricción del almacenamiento de datos en dispositivos antes de traslados o cruces fronterizos para limitar la exposición ante eventuales confiscaciones.\n\n### Recomendaciones\n\n*   **Establecer acuerdos previos y cláusulas contractuales:** Formalizar acuerdos con asesores legales y proveedores de TI que definan la asistencia posterior a incidentes y la obligación de notificar filtraciones de datos.\n*   **Desarrollar y ejercitar el plan de IR:** Realizar sesiones de simulación de incidentes probables, definiendo los canales de comunicación y aplicando políticas de minimización de información en dispositivos en movilidad.",
+  "evaluacion_calidad": {
+    "anclaje_fuente_score": 0.703690230846405,
+    "fragmentos_evaluados": 5,
+    "nivel_confianza": "alto"
+  },
+  "fuentes": [
+    {
+      "chunk_id": "f67f0e41-aa2c-4010-b023-664db92b30d1",
+      "texto": " posterior de lo \nsucedido y una orientación sobre cómo mejorar sus \ntácticas de prevención y respuestas ante futuras amenazas. \nAdemás de estos importantes conceptos de respuesta ante \nincidentes, su organización también debe prepararse para \ncualquier respuesta técnica específica. En algunos casos, la \nrespuesta técnica puede ser gestionada por el personal de \nTI interno o los administradores del sistema. Por ejemplo, si \nuna cuenta de correo electrónico parece haber sido pirateada, \nel administrador de la cuenta debe estar preparado y ser \ncapaz de cerrar o desactivar la cuenta afectada. Sin embargo, \nalgunos incidentes técnicos pueden requerir conocimientos \nespecializados que no tiene dentro de su organización. Para \nsituaciones como esta, es importante identificar una lista de \nconfianza de expertos técnicos externos que puedan ayudarle en \nsu respuesta a los incidentes. En algunos casos, es posible que \nquiera negociar previamente las condiciones con los proveedores \nde servicios (como el alojamiento de su sitio web o un consultor \ninformático) para asegurarse de que están disponibles (y no \ncobrarían un cargo adicional) para este tipo de respuesta a \nincidentes técnicos. \nPor último, pero no por ello menos importante, debe considerar \nlas medidas legales. Es importante entender las protecciones \nlegales que puede tener, así como las obligaciones legales o \nlas consecuencias que su organización podría enfrentar como \nresultado de una filtración de datos u otro incidente de seguridad. \nUn primer paso puede ser identificar a un asesor legal de confianza \nque conozca las leyes y normativas específicas de su país o \nlocalidad. Tómese un tiempo para repasar los posibles incidentes \ncon esta persona y elabore un plan sobre lo que haría en \nrespuesta. Es una buena idea llegar a un acuerdo con este asesor \nde confianza para que lo represente a usted y a sus intereses si \nes necesario también después de un incidente. Como parte de \nesta preparación legal, asegúrese de comprender las obligaciones \nlegales de cualquier proveedor o socio. ¿Están obligados a \nnotificarlo en",
+      "posicion": 127,
+      "score_relevancia": 0.513710081577301
+    },
+    {
+      "chunk_id": "ecebb2ea-1550-400c-b6d5-8003cc0290b0",
+      "texto": "Dispositivos\nMantenerse seguro \nen internet \nProteger la seguridad \nfísica \nQué hacer cuando las \ncosas van mal \n\n75 \nAsí que, ya sabe lo que hay que hacer. \nHa puesto en marcha las políticas y ha \ncapacitado a todos los miembros de la \norganización en las mejores prácticas. \nIncluso con todo este trabajo duro,  \nes muy probable que algo salga mal. \nLas cosas pasan. Cuando esto sucede, es esencial contar con un \nplan de respuesta ante incidentes. La respuesta a los incidentes \nes una parte fundamental, y a menudo infravalorada, del plan \nde seguridad de su organización porque puede ser la diferencia \nentre que un ataque destruya la reputación de su organización \no que sea un desagradable bache en el camino. Recuerde que \nsolo puede responder a un incidente si sabe cómo hacerlo. Es \nmuy importante tener una sólida cultura de seguridad en la \norganización y animar al personal a informar los problemas. Por \neso, es mejor premiar el buen comportamiento en materia de \nseguridad que castigar las fallos o errores de seguridad. También \nes importante expresar empatía y comprobar el bienestar del \npersonal cuando éste informa un incidente. Quiere que el \npersonal denuncie inmediatamente si hace clic en un enlace \nde phishing, un teléfono robado o una cuenta de redes sociales \npirateada, y no que dude por miedo a las represalias o a la \nfalta de apoyo. Después de todo, la respuesta a incidentes, al \nigual que las estrategias de mitigación mencionadas en otras \nsecciones del Manual, es un esfuerzo de toda la organización. \n•\t\nEntonces, ¿qué debe planificar? En resumen, cualquier cosa \nque tenga cierta probabilidad de ocurrir. Esto será diferente \npara cada organización, pero las preguntas comunes que un \nplan de respuesta a incidentes ayudará a responder incluyen: \n•\t\n¿Qué hacemos si nuestras cuentas o sitios web son pirateados? \n•\t\n¿Qué hacemos si alguien hace clic en un correo electrónico \nde",
+      "posicion": 123,
+      "score_relevancia": 0.4747096300125122
+    },
+    {
+      "chunk_id": "5b2f8724-38da-48da-ab8c-88c0e8f253df",
+      "texto": " \t Compruebe y asegure todas las vías de acceso a su espacio: puertas y ventanas. \no \t Desarrolle una política de invitados y acceso a la oficina. \no \t Utilice cerraduras fuertes, y rótelas/cámbielas cuando sea necesario. \no \t Considere la posibilidad de instalar una cámara u otro sistema de seguridad en la oficina. \no \t Tenga y utilice una trituradora de papel. \n•\t\nEstablezca un tiempo exclusivo para que el personal elimine los documentos impresos que \ncontienen información sensible. \no \t Elabore una lista de profesionales, organizaciones y cuerpos de seguridad locales con los \nque pueda poner en contacto al personal para obtener asistencia jurídica, médica y de salud \nmental en respuesta al acoso en línea. \no \t Desarrolle una política de viajes de la organización. \no \t Asegúrese de que el personal sepa qué hacer en caso de una emergencia durante el viaje, \nincluida la preparación del personal para saber qué hacer si es detenido en una frontera o un \npuesto de control. \no \t Antes de cualquier viaje local, nacional o internacional, recuerde al personal que debe limitar \nla información almacenada en los dispositivos. \no \t Tenga en cuenta los datos adicionales que se crean y comparten al organizar viajes o eventos. \nComunicar y almacenar los \ndatos de manera segura \nCimientos Sólidos: \nProtección de Cuentas  \ny Dispositivos\nQué hacer cuando las \ncosas van mal \nMantenerse seguro en \ninternet \nProteger la seguridad \nfísica \nCrear una cultura \nde seguridad \nProteger la seguridad física \n\nQué hacer \ncuando las \ncosas van mal \nCrear una cultura \nde seguridad \nComunicar y \nalmacenar los datos \nde manera segura \nCimientos Sólidos: \nProtección de Cuentas y \nDispositivos\nMantenerse seguro \nen internet \nProteger la seguridad \nfísica \nQué hacer cuando las \ncosas van mal \n\n75 \nAsí que, ya sabe lo que hay que hacer. \nHa puesto",
+      "posicion": 122,
+      "score_relevancia": 0.462274432182312
+    },
+    {
+      "chunk_id": "9715c248-1fba-4ce9-9b65-e47ca936fc83",
+      "texto": " si \nes necesario también después de un incidente. Como parte de \nesta preparación legal, asegúrese de comprender las obligaciones \nlegales de cualquier proveedor o socio. ¿Están obligados a \nnotificarlo en caso de que se produzca su propia filtración de \ndatos? ¿Qué apoyo (si lo hubiera) están obligados a prestarle \nen caso de incidente? Cuando elabore contratos y acuerdos con \nproveedores externos, tenga en cuenta la posibilidad de que se \nproduzca una filtración de datos u otro incidente. \nAunque no existe un enfoque único para la respuesta a \nincidentes, es esencial contar con planes operativos, de \ncomunicación, técnicos y legales claros. Cuando elabore su plan \nde respuesta a incidentes, le recomendamos encarecidamente \nque haga uso de algunos excelentes recursos existentes, \ndiseñados para ayudar a las organizaciones de la sociedad \ncivil y otros grupos de alto riesgo a lidiar con la respuesta a \nincidentes. Estos recursos incluyen el Kit de Primeros Auxilios \nDigitales desarrollado por RaReNet y CiviCERT, el Manual de \nCampo contra el Acoso en Línea de PEN América, el Manual de \nCampaña de Ciberseguridad del Centro Belfer, la Plantilla del \nPlan de Comunicaciones de Incidentes Cibernéticos y la Línea \nde Ayuda de Seguridad Digital de Access Now. \nCrear una cultura \nde seguridad \nComunicar y almacenar los \ndatos de manera segura \nCimientos Sólidos: \nProtección de Cuentas  \ny Dispositivos\nMantenerse seguro en \ninternet \nProteger la seguridad \nfísica \nQué hacer cuando las \ncosas van mal \n76 \t\nManual de Ciberseguridad \n\n77 \nRespuesta a Incidentes \no\t\nDesarrolle un plan de respuesta a incidentes de la organización, y póngalo en práctica. \n•\t\nHaga una lluvia de ideas sobre posibles incidentes y prepare su respuesta antes de que ocurran. \no\t\nAsegúrese de que todos los miembros de la organización sepan cómo se comunicarán",
+      "posicion": 128,
+      "score_relevancia": 0.45312899351119995
+    },
+    {
+      "chunk_id": "212acdd0-96da-498e-9d68-cad8bf23fda0",
+      "texto": "imientos Sólidos: \nProtección de Cuentas y \nDispositivos\nMantenerse seguro \nen internet \nProteger la seguridad \nfísica \nQué hacer cuando las \ncosas van mal \n\n69 \nVigilancia, Censura y Sociedad Civil \nLos ataques físicos a las organizaciones de la sociedad \ncivil son, desgraciadamente, algo habitual, y suelen tener \nimportantes implicaciones para la seguridad tanto física \ncomo de la información. Una táctica habitual de los \nadversarios para suprimir la actividad de las CSO es el \nallanamiento y cierre de oficinas, tanto para intimidar al \npersonal como, en algunos casos, para robar o confiscar \ninformación y equipos tecnológicos. Estas amenazas \nsuelen dirigirse a los grupos de minorías y de derechos \nhumanos y a las CSO que operan en el espacio de la \ndemocracia y la gobernabilidad. Por ejemplo, las oficinas \nde LGBT+ Rights Ghana, una organización civil que a \nprincipios de 2021 abrió el primer centro comunitario del \npaís para la comunidad local LGBTQI+, fueron amenazadas \ncon ser quemadas, y finalmente fueron allanadas y \ncerradas por la policía. Estos ataques no solo afectan a las \noperaciones físicas de una organización, sino que también \npueden dañar la sensación de seguridad del personal. \nEs esencial mantener sus dispositivos \nfísicamente seguros. Pero la seguridad \nfísica va más allá de los dispositivos, y debe \nincluir estrategias para proteger todo lo \ndemás en su mundo: los documentos en \npapel, la oficina de su organización o los \nespacios de trabajo y, por supuesto, usted, \nsu personal y los voluntarios. \nComunicar y almacenar los \ndatos de manera segura \nCimientos Sólidos: \nProtección de Cuentas  \ny Dispositivos\nQué hacer cuando las \ncosas van mal \nMantenerse seguro en \ninternet \nProteger la seguridad \nfísica \nCrear una cultura \nde seguridad \nProteger la seguridad física \n\nCómo instalar su propio sistema",
+      "posicion": 113,
+      "score_relevancia": 0.4503701627254486
+    }
+  ],
+  "almacenamiento_oci": {
+    "status_upload": "no_configurado",
+    "url_objeto": null,
+    "detalle": null
+  }
+}

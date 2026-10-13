@@ -201,7 +201,7 @@ class TestMarkdownSimple:
         Un archivo Markdown con un encabezado y un párrafo de texto debe
         retornar el texto visible sin las marcas de formato.
         """
-        markdown = b"# Introducción a Python\n\nPython es un lenguaje interpretado.\n"
+        markdown = "# Introducción a Python\n\nPython es un lenguaje interpretado.\n".encode("utf-8")
         resultado = service.extract_text(markdown, "text/markdown")
 
         # El texto del párrafo debe estar presente en el resultado
@@ -225,7 +225,7 @@ class TestMarkdownSimple:
         Un enlace Markdown [texto](url) debe conservar el texto del enlace
         y descartar la URL en el resultado.
         """
-        markdown = b"Visita la [documentación oficial](https://docs.python.org) para más info.\n"
+        markdown = "Visita la [documentación oficial](https://docs.python.org) para más info.\n".encode("utf-8")
         resultado = service.extract_text(markdown, "text/markdown")
 
         assert "documentación oficial" in resultado
@@ -296,3 +296,25 @@ class TestTXTUnicodeEspecial:
             texto.encode("utf-8"), "text/plain; charset=utf-8"
         )
         assert resultado == texto
+
+    def test_pdf_sintetico_valido_extrae_texto_correctamente(
+        self, service: DocumentService
+    ) -> None:
+        """
+        QA-001: Verifica que DocumentService procesa y extrae correctamente el texto
+        de un archivo PDF sintético válido generado en memoria sin dependencias externas.
+        """
+        import fitz  # PyMuPDF
+
+        doc = fitz.open()
+        page = doc.new_page()
+        texto_esperado = (
+            "NuevaMente: Sistema Inteligente de Adaptacion y Generacion Educativa."
+        )
+        page.insert_text((50, 72), texto_esperado)
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        resultado = service.extract_text(pdf_bytes, "application/pdf")
+        assert texto_esperado in resultado
+

@@ -1,0 +1,675 @@
+diff --git a/backend/backend/app/services/agent_service.py b/backend/backend/app/services/agent_service.py
+index 80c741c..9875299 100644
+--- a/backend/backend/app/services/agent_service.py
++++ b/backend/backend/app/services/agent_service.py
+@@ -18,6 +18,8 @@ from __future__ import annotations
+ 
+ import json
+ import logging
++import re
++import unicodedata
+ 
+ import numpy as np
+ 
+@@ -66,7 +68,10 @@ _INSTRUCCIONES_PERFIL: dict[str, str] = {
+ _INSTRUCCIONES_FORMATO: dict[str, str] = {
+     "tutorial": (
+         "Estructura el contenido como pasos numerados con: titulo del paso, explicacion, "
+-        "ejemplo o accion concreta, resultado esperado. Incluye prerequisitos al inicio."
++        "ejemplo o accion concreta, resultado esperado. Incluye prerequisitos al inicio. "
++        "Si la fuente corresponde a un concepto u oficio administrativo en instancia consultiva, "
++        "explicita su alcance orientador no vinculante y distinguelo claramente de las circulares, "
++        "leyes o decretos de caracter vinculante que cite."
+     ),
+     "flashcards": (
+         "Genera una lista JSON de tarjetas con estructura: "
+@@ -317,7 +322,29 @@ class AgentService:
+         )
+ 
+         # 5. Invocar el LLM (puede lanzar LLMNotConfiguredError o LLMGenerationError)
+-        contenido_raw = self.llm.generate(user_prompt, system_prompt)
++        # Selección determinista del método de generación:
++        # Se prefiere generate_with_telemetry si está implementado a nivel de clase o explícitamente en el mock.
++        # Nunca se atrapa TypeError interno para evitar dobles llamadas accidentales.
++        telemetria = None
++        tiene_telemetria = (
++            hasattr(type(self.llm), "generate_with_telemetry")
++            and callable(getattr(type(self.llm), "generate_with_telemetry"))
++        ) or (
++            hasattr(self.llm, "_mock_children")
++            and "generate_with_telemetry" in getattr(self.llm, "_mock_children", {})
++        )
++
++        if tiene_telemetria:
++            res = self.llm.generate_with_telemetry(user_prompt, system_prompt)
++            if not (isinstance(res, tuple) and len(res) == 2):
++                raise TypeError(
++                    f"El método generate_with_telemetry debe retornar una tupla de 2 elementos "
++                    f"(contenido, telemetria), pero retornó {type(res).__name__}."
++                )
++            contenido_raw, telemetria = res
++        else:
++            contenido_raw = self.llm.generate(user_prompt, system_prompt)
++
+         logger.info(
+             "generate_content: contenido generado (%d caracteres) para documento_id=%s",
+             len(contenido_raw),
+@@ -350,6 +377,10 @@ class AgentService:
+             request.documento_id,
+         )
+ 
++        # 9b. Metadatos educativos (QA-007)
++        tiempo_estudio = _estimar_tiempo_estudio(contenido_raw, request.formato_salida.value)
++        conceptos = _extraer_conceptos_clave(contenido_raw, chunks)
++
+         # 10. Construir y retornar la respuesta completa
+         return AdaptacionResponse(
+             status="ok",
+@@ -361,6 +392,11 @@ class AgentService:
+                 nicho=request.nicho,
+                 nivel_detalle=request.nivel_detalle,
+                 fragmentos_usados=len(chunks),
++                tiempo_estimado_estudio_minutos=tiempo_estudio,
++                conceptos_clave=conceptos,
++                tokens_entrada=telemetria.tokens_entrada if telemetria else None,
++                tokens_salida=telemetria.tokens_salida if telemetria else None,
++                latencia_segundos=telemetria.latencia_total_segundos if telemetria else None,
+             ),
+             contenido_adaptado=contenido_adaptado,
+             evaluacion_calidad=EvaluacionCalidad(
+@@ -454,3 +490,192 @@ def _extraer_json_de_markdown(texto: str) -> str:
+                 return stripped[inicio_contenido:cierre].strip()
+ 
+     return texto
++
++
++# ---------------------------------------------------------------------------
++# Funciones auxiliares: metadatos educativos (QA-007)
++# ---------------------------------------------------------------------------
++
++def _estimar_tiempo_estudio(contenido_raw: str, formato: str) -> int:
++    """
++    Estima el tiempo de estudio en minutos a partir de la extension y formato del contenido.
++    Basado en lectura analitica tecnica (~150 palabras/minuto), con minimo de 5 minutos
++    y maximo de 60 minutos.
++    """
++    palabras = len(contenido_raw.split())
++    if formato in ("quiz", "flashcards"):
++        lineas_items = max(1, contenido_raw.count('"pregunta"') or contenido_raw.count("?"))
++        return max(5, min(60, lineas_items * 2))
++    minutos = max(5, round(palabras / 150))
++    return min(60, minutos)
++
++
++_STOPWORDS_CONCEPTOS = {
++    "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "a", "al", "en",
++    "para", "por", "con", "sin", "sobre", "entre", "tras", "durante", "mediante",
++    "que", "como", "cual", "cuales", "donde", "cuando", "este", "esta", "estos", "estas",
++    "ese", "esa", "esos", "esas", "aquel", "aquella", "aquello", "aquellos", "aquellas",
++    "paso", "etapa", "fase", "parte", "nota", "ejemplo", "resumen", "tutorial", "guia",
++    "introduccion", "conclusion", "objetivo", "prerrequisito", "prerrequisitos", "modulo",
++    "tema", "titulo", "seccion", "contenido", "descripcion", "explicacion", "resultado",
++    "accion", "proceso", "definicion", "termino", "terminos", "glosario", "documento",
++    # Ordinales
++    "primero", "primera", "primeros", "primeras",
++    "segundo", "segunda", "segundos", "segundas",
++    "tercero", "tercera", "terceros", "terceras",
++    "cuarto", "cuarta", "cuartos", "cuartas",
++    "quinto", "quinta", "quintos", "quintas",
++    # Conectores discursivos, adverbios y marcadores
++    "asi", "asimismo", "ademas", "tambien", "incluso", "entonces", "luego",
++    "finalmente", "respecto", "conforme", "segun", "dado", "debido", "tanto",
++    # Verbos existenciales, auxiliares y modales genéricos
++    "existe", "existen", "cuenta", "cuentan", "debe", "deben", "puede", "pueden",
++    "tiene", "tienen", "presenta", "presentan", "realiza", "realizan", "incluye", "incluyen",
++    # Términos procedimentales / genéricos regulatorios o de interrogación
++    "pregunta", "preguntas", "respuesta", "respuestas", "consulta", "consultas",
++    "articulo", "articulos", "capitulo", "capitulos", "numeral", "numerales",
++    "paragrafo", "paragrafos", "literal", "literales", "caso", "casos",
++    # Términos bibliográficos, referencias de pie de página y metadatos de cita
++    "disponible en", "disponible", "recuperado", "consultado", "fuente", "fuentes",
++    "pagina", "paginas", "pag", "edicion", "editorial", "autor", "autores",
++    "ibidem", "op cit", "enlace", "url", "sitio web", "sitio",
++}
++
++
++def _extraer_conceptos_clave(contenido_raw: str, chunks: list[ChunkMetadata]) -> list[str]:
++    """
++    Extrae conceptos clave verificables y pedagógicamente relevantes.
++
++    Estrategia determinista jerárquica con complementación multinivel:
++      1. Extrae términos destacados en negrita Markdown (`**término**`) en el texto generado.
++      2. Si no alcanza el rango objetivo (< 4 conceptos), complementa con términos definidos
++         explícitamente (`Término:` o `- Término:`).
++      3. Si aún tiene < 4 conceptos, complementa con estructuras JSON (`concepto`, `titulo`, `tema`, `frente`).
++      4. Si aún tiene < 4 conceptos, complementa recurriendo a fragmentos fuente (`chunks`):
++         4a. Negritas en chunks fuente.
++         4b. Definiciones explícitas en chunks fuente.
++         4c. Términos técnicos compuestos o sustantivos capitalizados no aislados de inicio de frase.
++      5. Normaliza y filtra palabras vacías (stopwords normalizadas sin tildes),
++         longitud (< 3 o > 40), deduplica preservando orden, descarta subcadenas redundantes,
++         descarta términos truncados incompletos y limita a un máximo de 8 conceptos.
++      6. Si no existe contenido ni en la fuente ni en el texto generado, retorna lista vacía [].
++    """
++    conceptos: list[str] = []
++    vistos: set[str] = set()
++
++    def _normalizar(s: str) -> str:
++        s_lower = s.lower().strip()
++        return "".join(
++            c for c in unicodedata.normalize("NFD", s_lower)
++            if unicodedata.category(c) != "Mn"
++        )
++
++    # Precomputar stopwords normalizadas para chequeo uniforme sin tildes
++    stopwords_norm = {_normalizar(w) for w in _STOPWORDS_CONCEPTOS}
++
++    def _es_termino_valido(term: str) -> bool:
++        t_clean = term.strip().strip(".:;,-\"'`()")
++        if len(t_clean) < 3 or len(t_clean) > 40:
++            return False
++        t_norm = _normalizar(t_clean)
++        if t_clean.lower() in _STOPWORDS_CONCEPTOS or t_norm in stopwords_norm:
++            return False
++        if t_clean.lower() in vistos or t_norm in vistos:
++            return False
++        if t_clean.startswith("http") or t_clean.isdigit():
++            return False
++        # Descartar si son solo números o palabras genéricas de paso (ej: "Paso 1")
++        if re.match(r"^(?:paso|etapa|fase)\s*\d+$", t_norm):
++            return False
++        # Descartar términos truncados que terminan en partículas o abreviaturas (ej: "Circular Externa No")
++        if re.search(r"\b(?:no|num|nro|del|de|la|el|en|y)\b$", t_clean, re.IGNORECASE):
++            return False
++        # Si es una sola palabra con solo números o caracteres especiales
++        if not re.search(r"[a-zA-ZáéíóúÁÉÍÓÚñÑ]", t_clean):
++            return False
++        # Si todas las palabras que componen el término son stopwords individuales (ej: "Disponible en")
++        palabras_norm = [_normalizar(w.strip(".:;,-\"'`()")) for w in t_clean.split()]
++        if palabras_norm and all(w in stopwords_norm or w in _STOPWORDS_CONCEPTOS for w in palabras_norm):
++            return False
++        return True
++
++    def _agregar_termino(term: str) -> bool:
++        t_clean = term.strip().strip(".:;,-\"'`()")
++        if _es_termino_valido(t_clean):
++            t_norm = _normalizar(t_clean)
++
++            # Deduplicación por subcadena / supercadena respecto a los conceptos existentes
++            for idx, c_existente in enumerate(conceptos):
++                c_exist_norm = _normalizar(c_existente)
++                # Si el nuevo término es subcadena propia de uno ya existente que tiene más palabras (ej: "Contencioso Administrativo" dentro de "Código Contencioso Administrativo")
++                if len(t_clean.split()) < len(c_existente.split()) and t_norm in c_exist_norm:
++                    return False
++                # Si el nuevo término es más específico y contiene por completo al ya existente (ej: llega "Código Contencioso Administrativo" y ya estaba "Contencioso Administrativo")
++                if len(t_clean.split()) > len(c_existente.split()) and c_exist_norm in t_norm:
++                    # Reemplazar el concepto menos específico por el más completo
++                    vistos.discard(c_existente.lower())
++                    vistos.discard(c_exist_norm)
++                    conceptos[idx] = t_clean
++                    vistos.add(t_clean.lower())
++                    vistos.add(t_norm)
++                    return len(conceptos) >= 8
++
++            vistos.add(t_clean.lower())
++            vistos.add(t_norm)
++            conceptos.append(t_clean)
++            return len(conceptos) >= 8
++        return False
++
++    # 1. Buscar términos resaltados en negrita tipo **concepto** en el contenido generado
++    destacados = re.findall(r"\*\*([a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s_\-]{3,40})\*\*", contenido_raw)
++    for d in destacados:
++        if _agregar_termino(d):
++            return conceptos
++
++    # 2. Complementar con términos antes de dos puntos en listas o glosarios (ej: "- Fotosíntesis: ..." o "Cloroplastos: ...")
++    if len(conceptos) < 4:
++        lineas_definicion = re.findall(r"(?:^|\n)(?:[-*•]\s*)?([A-ZÁÉÍÓÚÑ][a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s_\-]{2,35})\s*:\s*[A-ZÁÉÍÓÚÑa-z0-9]", contenido_raw)
++        for ld in lineas_definicion:
++            if _agregar_termino(ld):
++                return conceptos
++
++    # 3. Complementar con estructuras JSON ("concepto", "titulo", "tema", etc.)
++    if len(conceptos) < 4:
++        claves_json = re.findall(r'"(?:concepto|titulo|tema|frente)":\s*"([^"]{3,40})"', contenido_raw, re.IGNORECASE)
++        for c in claves_json:
++            if _agregar_termino(c):
++                return conceptos
++
++    # 4. Complementar desde fragmentos fuente (chunks)
++    if len(conceptos) < 4 and chunks:
++        texto_fuente = " ".join(c.texto for c in chunks if getattr(c, "texto", None))
++        # 4a. Buscar negritas en la fuente
++        destacados_fuente = re.findall(r"\*\*([a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s_\-]{3,40})\*\*", texto_fuente)
++        for df in destacados_fuente:
++            if _agregar_termino(df):
++                return conceptos
++
++        # 4b. Buscar definiciones en la fuente (Termino: definicion)
++        if len(conceptos) < 4:
++            defs_fuente = re.findall(r"(?:^|\n)(?:[-*•]\s*)?([A-ZÁÉÍÓÚÑ][a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s_\-]{2,35})\s*:\s*", texto_fuente)
++            for dff in defs_fuente:
++                if _agregar_termino(dff):
++                    return conceptos
++
++        # 4c. Buscar términos técnicos en la fuente:
++        # Primero compuestos multipalabra (ej: "Circular Externa", "Oficial de Cumplimiento", "Ciclo de Calvin")
++        if len(conceptos) < 4:
++            compuestos_fuente = re.findall(r"\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+(?:de\s+|del\s+)?[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)\b", texto_fuente)
++            for cf in compuestos_fuente:
++                if _agregar_termino(cf):
++                    return conceptos
++
++        # Segundo sustantivos técnicos individuales precedidos por minúscula (evita mayúsculas de inicio de frase)
++        if len(conceptos) < 4:
++            sustantivos_internos = re.findall(r"(?<=[a-záéíóúñ]\s)([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{3,30})\b", texto_fuente)
++            for si in sustantivos_internos:
++                if _agregar_termino(si):
++                    return conceptos
++
++    return conceptos
++
+diff --git a/backend/backend/app/services/llm_service.py b/backend/backend/app/services/llm_service.py
+index edd839e..ee7b9b2 100644
+--- a/backend/backend/app/services/llm_service.py
++++ b/backend/backend/app/services/llm_service.py
+@@ -6,7 +6,11 @@ El proveedor y el modelo se seleccionan a través de variables de entorno, sin
+ hardcodear ninguna clave de API en el código.
+ """
+ 
++import json
+ import logging
++import random
++import time
++from dataclasses import dataclass
+ 
+ from app.core.config import Settings
+ from app.core.exceptions import (
+@@ -16,10 +20,35 @@ from app.core.exceptions import (
+ )
+ 
+ logger = logging.getLogger(__name__)
++telemetry_logger = logging.getLogger("app.telemetry")
+ 
+ # Conjunto de proveedores LLM soportados por el sistema
+ VALID_PROVIDERS = {"openai", "google_gemini"}
+ 
++# Constantes de política de reintento para llamadas a Gemini
++MAX_RETRIES = 3  # Hasta 3 intentos totales (1 inicial + 2 reintentos)
++MAX_TOTAL_WAIT_SECONDS = 8.0  # Límite máximo de espera acumulada
++BASE_WAIT_SECONDS = 2.0  # Base para backoff exponencial (2s, 4s...)
++JITTER_RATIO = 0.2  # Variación aleatoria +/- 20%
++
++
++@dataclass(frozen=True)
++class LLMTelemetry:
++    """
++    Estructura inmutable que transporta la telemetría de una llamada al LLM
++    sin retener estado en atributos compartidos de la clase (aislamiento concurrente).
++    """
++
++    modelo: str
++    tokens_entrada: int | None = None
++    tokens_salida: int | None = None
++    tokens_total: int | None = None
++    latencia_llamada_segundos: float = 0.0
++    latencia_total_segundos: float = 0.0
++    intentos: int = 1
++    estado_final: str = "exitoso"
++    error_detalle: str | None = None
++
+ 
+ class LLMService:
+     """
+@@ -69,14 +98,31 @@ class LLMService:
+     def generate(self, prompt: str, system_prompt: str = "") -> str:
+         """
+         Genera texto usando el proveedor LLM configurado.
++        Conserva el contrato histórico retornando exclusivamente un string.
+ 
+         Args:
+             prompt:        Mensaje principal enviado al modelo (rol de usuario).
+             system_prompt: Instrucciones de contexto para el modelo (rol de sistema).
+-                           Si está vacío, no se incluye en la solicitud.
+ 
+         Returns:
+             Texto generado por el modelo como string.
++        """
++        texto, _ = self.generate_with_telemetry(prompt, system_prompt)
++        return texto
++
++    def generate_with_telemetry(
++        self, prompt: str, system_prompt: str = ""
++    ) -> tuple[str, LLMTelemetry]:
++        """
++        Genera texto y retorna la tupla (texto, telemetria) garantizando
++        aislamiento thread-safe entre solicitudes concurrentes.
++
++        Args:
++            prompt:        Mensaje principal enviado al modelo (rol de usuario).
++            system_prompt: Instrucciones de contexto para el modelo (rol de sistema).
++
++        Returns:
++            Tupla (texto_generado, objeto_telemetria).
+ 
+         Raises:
+             LLMNotConfiguredError: Si `LLM_API_KEY` está ausente o vacía.
+@@ -93,11 +139,10 @@ class LLMService:
+ 
+         try:
+             if self._settings.llm_provider == "openai":
+-                return self._generate_openai(prompt, system_prompt)
++                return self._generate_openai_with_telemetry(prompt, system_prompt)
+             else:  # google_gemini
+-                return self._generate_gemini(prompt, system_prompt)
++                return self._generate_gemini_with_telemetry(prompt, system_prompt)
+         except (LLMNotConfiguredError, LLMGenerationError):
+-            # Re-lanzar excepciones propias sin envolver
+             raise
+         except Exception as exc:
+             logger.error(
+@@ -115,49 +160,56 @@ class LLMService:
+     # Implementaciones privadas por proveedor
+     # ------------------------------------------------------------------
+ 
+-    def _generate_openai(self, prompt: str, system_prompt: str) -> str:
+-        """
+-        Genera texto utilizando la API de OpenAI (chat completions).
+-
+-        Args:
+-            prompt:        Contenido del mensaje de usuario.
+-            system_prompt: Instrucciones para el rol de sistema.
+-                           Si está vacío, no se añade el mensaje de sistema.
+-
+-        Returns:
+-            Texto generado por el modelo.
+-
+-        Raises:
+-            LLMNotConfiguredError: Si la clave de API es inválida o fue revocada.
+-            LLMGenerationError:    Si la llamada a la API falla por cualquier otra razón.
+-        """
++    def _generate_openai_with_telemetry(
++        self, prompt: str, system_prompt: str
++    ) -> tuple[str, LLMTelemetry]:
++        """Genera texto con OpenAI y extrae telemetría de tokens si está disponible."""
+         try:
+-            import openai  # Importación diferida para evitar error si no está instalado
++            import openai  # Importación diferida
+         except ImportError as exc:
+             raise LLMGenerationError(
+                 message="Error al generar contenido con el LLM.",
+                 detail="El paquete 'openai' no está instalado. Ejecuta: pip install openai",
+             ) from exc
+ 
+-        # Construir la lista de mensajes según disponibilidad de system_prompt
+         messages: list[dict[str, str]] = []
+         if system_prompt:
+             messages.append({"role": "system", "content": system_prompt})
+         messages.append({"role": "user", "content": prompt})
+ 
++        t_inicio = time.time()
+         try:
+             client = openai.OpenAI(api_key=self._settings.llm_api_key)
+             response = client.chat.completions.create(
+                 model=self._settings.llm_model,
+                 messages=messages,  # type: ignore[arg-type]
+             )
++            latencia = round(time.time() - t_inicio, 4)
+             contenido = response.choices[0].message.content
+             if contenido is None:
+                 raise LLMGenerationError(
+                     message="El LLM retornó una respuesta vacía.",
+                     detail="La respuesta del modelo no contenía texto en choices[0].message.content.",
+                 )
+-            return contenido
++
++            # Extraer tokens si existen
++            usage = getattr(response, "usage", None)
++            tokens_in = getattr(usage, "prompt_tokens", None) if usage else None
++            tokens_out = getattr(usage, "completion_tokens", None) if usage else None
++            tokens_tot = getattr(usage, "total_tokens", None) if usage else None
++
++            telemetria = LLMTelemetry(
++                modelo=self._settings.llm_model,
++                tokens_entrada=tokens_in,
++                tokens_salida=tokens_out,
++                tokens_total=tokens_tot,
++                latencia_llamada_segundos=latencia,
++                latencia_total_segundos=latencia,
++                intentos=1,
++                estado_final="exitoso",
++            )
++            self._registrar_telemetria_segura(telemetria)
++            return contenido, telemetria
+ 
+         except openai.AuthenticationError as exc:
+             raise LLMNotConfiguredError(
+@@ -175,20 +227,12 @@ class LLMService:
+                 detail=f"Error en la API de OpenAI: {exc}",
+             ) from exc
+ 
+-    def _generate_gemini(self, prompt: str, system_prompt: str) -> str:
++    def _generate_gemini_with_telemetry(
++        self, prompt: str, system_prompt: str
++    ) -> tuple[str, LLMTelemetry]:
+         """
+-        Genera texto utilizando la API de Google Gemini (Generative AI).
+-
+-        Args:
+-            prompt:        Contenido principal del mensaje.
+-            system_prompt: Instrucciones de contexto. Si no está vacío, se
+-                           antepone al prompt separado por dos saltos de línea.
+-
+-        Returns:
+-            Texto generado por el modelo.
+-
+-        Raises:
+-            LLMGenerationError: Si la llamada a la API de Gemini falla.
++        Genera texto con Google Gemini implementando política de reintentos acotada
++        ante errores 429 transitorios y extracción segura de usage_metadata.
+         """
+         try:
+             import google.generativeai as genai  # Importación diferida
+@@ -201,21 +245,189 @@ class LLMService:
+                 ),
+             ) from exc
+ 
+-        # Construir el prompt completo: system_prompt (si existe) + prompt de usuario
++        # Construir el prompt completo
+         if system_prompt:
+             full_prompt = f"{system_prompt}\n\n{prompt}"
+         else:
+             full_prompt = prompt
+ 
+-        try:
+-            genai.configure(api_key=self._settings.llm_api_key)
+-            modelo = genai.GenerativeModel(self._settings.llm_model)
+-            response = modelo.generate_content(full_prompt)
+-            return response.text
++        genai.configure(api_key=self._settings.llm_api_key, transport="rest")
++        modelo = genai.GenerativeModel(self._settings.llm_model)
++
++        t_inicio_total = time.time()
++        espera_acumulada = 0.0
++
++        for intento in range(1, MAX_RETRIES + 1):
++            t_inicio_llamada = time.time()
++            try:
++                response = modelo.generate_content(full_prompt)
++                latencia_llamada = round(time.time() - t_inicio_llamada, 4)
++                latencia_total = round(time.time() - t_inicio_total, 4)
++
++                # Extraer usage_metadata de forma defensiva
++                usage = getattr(response, "usage_metadata", None)
++                tokens_in = getattr(usage, "prompt_token_count", None) if usage else None
++                tokens_out = getattr(usage, "candidates_token_count", None) if usage else None
++                tokens_tot = getattr(usage, "total_token_count", None) if usage else None
++
++                estado = "exitoso" if intento == 1 else "429_transitorio_recuperado"
++                telemetria = LLMTelemetry(
++                    modelo=self._settings.llm_model,
++                    tokens_entrada=tokens_in,
++                    tokens_salida=tokens_out,
++                    tokens_total=tokens_tot,
++                    latencia_llamada_segundos=latencia_llamada,
++                    latencia_total_segundos=latencia_total,
++                    intentos=intento,
++                    estado_final=estado,
++                )
++                self._registrar_telemetria_segura(telemetria)
++                return response.text, telemetria
++
++            except Exception as exc:
++                latencia_llamada = round(time.time() - t_inicio_llamada, 4)
++                es_reintentable, es_cuota_agotada, retry_after = self._analizar_excepcion_gemini(exc)
++
++                if es_cuota_agotada:
++                    latencia_total = round(time.time() - t_inicio_total, 4)
++                    telemetria = LLMTelemetry(
++                        modelo=self._settings.llm_model,
++                        latencia_llamada_segundos=latencia_llamada,
++                        latencia_total_segundos=latencia_total,
++                        intentos=intento,
++                        estado_final="cuota_agotada",
++                        error_detalle="Cuota de solicitudes o crédito del modelo agotada.",
++                    )
++                    self._registrar_telemetria_segura(telemetria)
++                    logger.warning("Cuota de Gemini agotada comprobada. Corte inmediato sin reintentos.")
++                    raise LLMGenerationError(
++                        message="Cuota de servicio LLM agotada.",
++                        detail="La cuota asignada para el modelo de IA ha sido excedida.",
++                    ) from exc
++
++                if not es_reintentable or intento >= MAX_RETRIES:
++                    latencia_total = round(time.time() - t_inicio_total, 4)
++                    telemetria = LLMTelemetry(
++                        modelo=self._settings.llm_model,
++                        latencia_llamada_segundos=latencia_llamada,
++                        latencia_total_segundos=latencia_total,
++                        intentos=intento,
++                        estado_final="error_definitivo",
++                        error_detalle=type(exc).__name__,
++                    )
++                    self._registrar_telemetria_segura(telemetria)
++
++                    if es_reintentable and intento >= MAX_RETRIES:
++                        raise LLMGenerationError(
++                            message="El servicio LLM está temporalmente saturado.",
++                            detail="Se superó el límite de tasa y los reintentos no tuvieron éxito. Intente nuevamente en unos instantes.",
++                        ) from exc
++                    else:
++                        raise LLMGenerationError(
++                            message="Error al generar contenido con el LLM.",
++                            detail=f"Error en la llamada al modelo: {type(exc).__name__}",
++                        ) from exc
++
++                # Calcular tiempo de espera para el siguiente intento
++                tiempo_espera = self._calcular_espera(intento, retry_after)
++                if espera_acumulada + tiempo_espera > MAX_TOTAL_WAIT_SECONDS:
++                    logger.warning(
++                        "Espera acumulada (%0.2fs) superaría el límite (%0.2fs). Cancelando reintentos.",
++                        espera_acumulada + tiempo_espera,
++                        MAX_TOTAL_WAIT_SECONDS,
++                    )
++                    latencia_total = round(time.time() - t_inicio_total, 4)
++                    telemetria = LLMTelemetry(
++                        modelo=self._settings.llm_model,
++                        latencia_llamada_segundos=latencia_llamada,
++                        latencia_total_segundos=latencia_total,
++                        intentos=intento,
++                        estado_final="error_definitivo",
++                        error_detalle="Límite máximo de espera acumulada alcanzado.",
++                    )
++                    self._registrar_telemetria_segura(telemetria)
++                    raise LLMGenerationError(
++                        message="El servicio LLM está temporalmente saturado.",
++                        detail="Tiempo máximo de espera para reintentos alcanzado.",
++                    ) from exc
++
++                espera_acumulada += tiempo_espera
++                logger.info(
++                    "Error transitorio en intento %d/%d (%s). Esperando %0.2fs antes de reintentar.",
++                    intento,
++                    MAX_RETRIES,
++                    type(exc).__name__,
++                    tiempo_espera,
++                )
++                time.sleep(tiempo_espera)
++
++        raise LLMGenerationError(
++            message="Error al generar contenido con el LLM.",
++            detail="Se superó el número máximo de reintentos.",
++        )
++
++    def _analizar_excepcion_gemini(self, exc: Exception) -> tuple[bool, bool, float | None]:
++        """
++        Analiza una excepción retornada por el SDK de Google y determina:
++        (es_reintentable, es_cuota_agotada_definitiva, retry_after_seconds)
++        """
++        exc_name = type(exc).__name__
++        exc_str = str(exc).lower()
++
++        # Detección de cuota diaria / saldo agotado (NO reintentable)
++        patrones_cuota_definitiva = [
++            "quota exceeded for quota metric 'generatecontent requests per day'",
++            "requests per day",
++            "daily quota exceeded",
++            "credit balance",
++            "free tier quota exhausted",
++        ]
++        if any(p in exc_str for p in patrones_cuota_definitiva):
++            return False, True, None
++
++        # Detección de errores transitorios 429 (ResourceExhausted) o de red/servidor (500, 503)
++        es_429 = "resourceexhausted" in exc_name.lower() or "429" in exc_str
++        es_503 = "serviceunavailable" in exc_name.lower() or "503" in exc_str
++        es_500 = "internalservererror" in exc_name.lower() or "500" in exc_str
++
++        if es_429 or es_503 or es_500:
++            # Extraer posible sugerencia de retry_after si existe en el objeto
++            retry_after = getattr(exc, "retry_after", None)
++            return True, False, retry_after
++
++        # Errores definitivos de cliente (400, 403, 404, etc.)
++        return False, False, None
++
++    def _calcular_espera(self, intento: int, retry_after: float | None) -> float:
++        """Calcula el tiempo de backoff exponencial con jitter."""
++        if retry_after is not None and 0 < retry_after <= MAX_TOTAL_WAIT_SECONDS:
++            return retry_after
++
++        # Backoff: BASE * (2 ** (intento - 1)) -> intento 1: 2s, intento 2: 4s...
++        base = BASE_WAIT_SECONDS * (2 ** (intento - 1))
++        # Jitter: +/- JITTER_RATIO
++        jitter = base * JITTER_RATIO * (random.uniform(-1.0, 1.0))
++        return max(0.5, base + jitter)
++
++    def _registrar_telemetria_segura(self, telemetria: LLMTelemetry) -> None:
++        """
++        Registra la telemetría sanitizada en app.telemetry.
++        Nunca expone claves API, prompts, texto generado ni fragmentos de documentos.
++        """
++        payload = {
++            "evento": "llm_generacion",
++            "proveedor": self._settings.llm_provider,
++            "modelo": telemetria.modelo,
++            "tokens_entrada": telemetria.tokens_entrada,
++            "tokens_salida": telemetria.tokens_salida,
++            "tokens_total": telemetria.tokens_total,
++            "latencia_llamada_s": telemetria.latencia_llamada_segundos,
++            "latencia_total_s": telemetria.latencia_total_segundos,
++            "intentos": telemetria.intentos,
++            "estado_final": telemetria.estado_final,
++        }
++        if telemetria.error_detalle:
++            payload["error"] = telemetria.error_detalle
++
++        telemetry_logger.info(json.dumps(payload))
+ 
+-        except Exception as exc:
+-            logger.error("Error al invocar Google Gemini: %s", exc, exc_info=True)
+-            raise LLMGenerationError(
+-                message="Error al generar contenido con el LLM.",
+-                detail=f"Error en la API de Google Gemini: {exc}",
+-            ) from exc
