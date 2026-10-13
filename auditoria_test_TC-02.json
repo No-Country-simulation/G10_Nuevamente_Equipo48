@@ -1,0 +1,71 @@
+{
+  "status": "ok",
+  "document_id": "NM-006",
+  "metadatos": {
+    "documento_id": "NM-006",
+    "perfil_destinatario": "lider_tecnico",
+    "formato_salida": "flashcards",
+    "nicho": "general",
+    "nivel_detalle": "tecnico",
+    "timestamp": "2026-10-11T21:17:40.116102Z",
+    "fragmentos_usados": 1,
+    "tiempo_estimado_estudio_minutos": 12,
+    "conceptos_clave": [
+      "Cimientos Sólidos",
+      "Navegador Tor",
+      "Tanto Chrome",
+      "Press Foundation",
+      "Privacy Badger",
+      "Privacy \nEssentials",
+      "Protección de Cuentas",
+      "Dispositivos\nProteger"
+    ],
+    "tokens_entrada": 696,
+    "tokens_salida": 608,
+    "latencia_segundos": 17.0253
+  },
+  "contenido_adaptado": [
+    {
+      "pregunta": "¿Cuál es la severidad y el alcance técnico de un compromiso originado a través de extensiones o complementos maliciosos en comparación con el malware descargado convencionalmente?",
+      "respuesta": "Los ataques basados en complementos maliciosos pueden ser tan dañinos como el malware distribuido mediante descargas directas de phishing o software malicioso. A nivel de impacto, permiten comprometer datos críticos como el correo electrónico y el historial de navegación de los usuarios."
+    },
+    {
+      "pregunta": "Analizando el incidente de 2021 contra la sociedad civil tibetana, ¿cuál fue el vector de entrega y la táctica empleada para comprometer al cliente a través de complementos?",
+      "respuesta": "El vector de entrega comenzó con correos de suplantación de identidad (phishing) que dirigían a los usuarios a sitios web específicos. En estos sitios se presentaba un complemento malicioso bajo el señuelo de 'Componentes de actualización de Flash', diseñado para robar correo electrónico y datos de navegación."
+    },
+    {
+      "pregunta": "¿Qué navegadores se consideran de confianza y cuál es el trade-off mencionado entre opciones populares como Chrome y Firefox?",
+      "respuesta": "Se consideran confiables Chrome, Firefox, Brave, Safari, Edge y el Navegador Tor. Tanto Chrome como Firefox ofrecen un buen desempeño en seguridad y cuentan con un uso extendido; no obstante, el trade-off de elegir Firefox radica en su enfoque diferenciado hacia la privacidad."
+    },
+    {
+      "pregunta": "Desde el punto de vista del mantenimiento y ciclo de vida del software cliente, ¿qué práctica operacional garantiza la correcta aplicación de actualizaciones en el navegador?",
+      "respuesta": "Reiniciar el navegador y reiniciar la computadora con relativa frecuencia. Esta acción asegura que el software del navegador se mantenga efectivamente actualizado."
+    },
+    {
+      "pregunta": "¿Qué extensiones se recomiendan como contramedida técnica frente al rastreo de anunciantes y terceros, y cuál es su objetivo funcional?",
+      "respuesta": "Se recomiendan Privacy Badger, uBlock Origin y Privacy Essentials de DuckDuckGo. Su objetivo funcional es bloquear anunciantes y rastreadores de terceros para impedir que monitoreen el historial de navegación y las visitas a sitios web."
+    },
+    {
+      "pregunta": "¿Qué decisión de configuración a nivel de motor de búsqueda se prescribe para mitigar la exposición ante rastreadores y anunciantes de terceros?",
+      "respuesta": "Modificar el motor de búsqueda predeterminado del navegador, migrando de Google a motores enfocados en la protección de la privacidad como DuckDuckGo o Startpage, lo que limita la recopilación de datos por parte de rastreadores y anunciantes."
+    }
+  ],
+  "evaluacion_calidad": {
+    "anclaje_fuente_score": 0.6396628618240356,
+    "fragmentos_evaluados": 1,
+    "nivel_confianza": "medio"
+  },
+  "fuentes": [
+    {
+      "chunk_id": "b5088c25-353d-4d86-a80b-ad798476515f",
+      "texto": " activistas de la sociedad civil tibetana fueron atacados \na principios de 2021 con un complemento del navegador \nmalicioso inteligentemente diseñado, que robó su correo \nelectrónico y datos de navegación. El complemento, \ndenominado “Componentes de actualización de Flash”, \nse presentaba a los usuarios que visitaban sitios web \nvinculados a correos electrónicos de suplantación de \nidentidad. Estos ataques a las extensiones o complementos \ndel navegador pueden ser tan dañinos como el malware \ncompartido directamente a través de descargas de \nphishing u otro software.\n¿QUÉ NAVEGADOR DEBEMOS \nUTILIZAR? \nUtilice un navegador de confianza, como Chrome, Firefox, \nBrave, Safari, Edge o el Navegador Tor. Tanto Chrome como \nFirefox son muy utilizados y hacen un buen trabajo con la \nseguridad. Algunas personas prefieren Firefox por su enfoque \nde privacidad. En cualquier caso, es importante que los reinicie \ny que reinicie la computadora con relativa frecuencia para \nmantener su navegador actualizado. Si le interesa comparar las \ncaracterísticas de los navegadores, consulte este recurso de \nla Freedom of the Press Foundation. Independientemente del \nnavegador, también es una buena idea utilizar una extensión \no complemento, como Privacy Badger, uBlock Origin o Privacy \nEssentials de DuckDuckGo, que impide que los anunciantes y \notros rastreadores de terceros sepan adónde va y qué sitios \nvisita. Y cuando navegue por internet, considere la posibilidad \nde cambiar sus búsquedas web predeterminadas de Google a \nDuckDuckGo, Startpage u otro motor de búsqueda que proteja \nla privacidad. Este cambio ayudará a limitar también a los \nanunciantes y rastreadores de terceros. \nCimientos Sólidos: \nProtección de Cuentas  \ny Dispositivos\nProteger la seguridad \nfísica \nQué hacer cuando las \ncosas van mal \nComunicar y almacenar los \ndatos de manera segura \nMantenerse seguro",
+      "posicion": 104,
+      "score_relevancia": 0.28322887420654297
+    }
+  ],
+  "almacenamiento_oci": {
+    "status_upload": "no_configurado",
+    "url_objeto": null,
+    "detalle": null
+  }
+}

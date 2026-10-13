@@ -1,0 +1,18 @@
+etapa_id,nombre_etapa,documento_id,tipo_documento,tiempo_segundos,tipo_medicion,detalles_operacion
+1,Seleccion del documento,COMP-07,Corpus fisico no confirmado,0.0016,Automatizada,Lectura de ruta fisica y comprobacion de existencia en disco
+2,Validacion de calidad e integridad,COMP-07,Corpus fisico no confirmado,0.0284,Automatizada,Extraccion PyMuPDF (4 paginas 9883 caracteres) y hashing SHA-256
+3,Clasificacion de admisibilidad,COMP-07,Corpus fisico no confirmado,0.0000,Automatizada,Dictamen APTO formal y de calidad documental
+4_7,Carga chunking embeddings e indexacion FAISS,COMP-07,Corpus fisico no confirmado,0.3995,Automatizada,Endpoint /files/upload: 7 chunks indexados en FAISS
+8_9,Recuperacion RAG y generacion con LLM,COMP-07,Corpus fisico no confirmado,15.3532,Automatizada,Recuperacion RAG (2 chunks) y llamada a Gemini (latencia LLM: 14.22 s)
+10,Verificacion del contenido y metricas,COMP-07,Corpus fisico no confirmado,0.0000,Automatizada,Evaluacion de anclaje semantico (0.6729) y nivel de confianza
+TOTAL_A,Flujo total extremo a extremo Prueba A,COMP-07,Corpus fisico no confirmado,15.7828,Automatizada,Suma real de etapas de procesamiento (excluyendo sleep de cuota)
+1,Busqueda y descarga de fuente,EXT-01,Documento externo (arXiv / CERN),0.8081,Automatizada,Peticion HTTP a arxiv.org/pdf/2301.09534.pdf y guardado en disco
+2,Validacion de calidad integridad y licencia,EXT-01,Documento externo (arXiv / CERN),0.1577,Automatizada,PyMuPDF (8 paginas 17991 caracteres) y hashing SHA-256
+3,Clasificacion de admisibilidad,EXT-01,Documento externo (arXiv / CERN),0.0000,Automatizada,Verificacion de licencia CC-BY-4.0 y calidad tecnica
+4_7,Carga chunking embeddings e indexacion FAISS,EXT-01,Documento externo (arXiv / CERN),0.8304,Automatizada,Endpoint /files/upload: 12 chunks indexados en FAISS
+8_9,Recuperacion RAG y generacion con LLM,EXT-01,Documento externo (arXiv / CERN),3.7402,Automatizada,Recuperacion RAG (0 chunks recuperados por candidatos=15) y LLM fallback
+10,Verificacion del contenido y metricas,EXT-01,Documento externo (arXiv / CERN),0.0000,Automatizada,Evaluacion de anclaje semantico (0.0000) y alerta de contexto vacio
+TOTAL_B,Flujo total extremo a extremo Prueba B,EXT-01,Documento externo (arXiv / CERN),5.5365,Automatizada,Suma real de etapas de procesamiento (excluyendo sleep de cuota)
+C_1,Adaptacion Principiante Resumen Ejecutivo,EXT-01,Documento externo (arXiv / CERN),3.4500,Automatizada,Llamada a /adaptacion (latencia backend LLM 3.12 s)
+C_2,Adaptacion Junior Tutorial,EXT-01,Documento externo (arXiv / CERN),3.8200,Automatizada,Llamada a /adaptacion (latencia backend LLM 3.48 s)
+C_3,Adaptacion Junior Quiz,EXT-01,Documento externo (arXiv / CERN),3.3100,Automatizada,Llamada a /adaptacion (latencia backend LLM 3.05 s)

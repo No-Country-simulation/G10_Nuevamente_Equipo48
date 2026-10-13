@@ -364,3 +364,65 @@ def test_error_response_detalle_vacio():
     """ErrorResponse debe aceptar detalle vacío."""
     err = ErrorResponse(error="Fallo de validación", detalle="")
     assert err.detalle == ""
+
+
+# ---------------------------------------------------------------------------
+# Tests de Metadatos Educativos (QA-007)
+# ---------------------------------------------------------------------------
+
+
+def test_metadatos_incluyen_campos_educativos_qa_007():
+    """QA-007: Metadatos debe incluir tiempo_estimado_estudio_minutos y conceptos_clave."""
+    meta = Metadatos(
+        documento_id="doc-qa-007",
+        perfil_destinatario=PerfilDestinatario.junior,
+        formato_salida=FormatoSalida.tutorial,
+        nicho=Nicho.fintech,
+        nivel_detalle=NivelDetalle.tecnico,
+        fragmentos_usados=3,
+        tiempo_estimado_estudio_minutos=15,
+        conceptos_clave=["Riesgo Crediticio", "Scoring"],
+    )
+    assert meta.tiempo_estimado_estudio_minutos == 15
+    assert meta.conceptos_clave == ["Riesgo Crediticio", "Scoring"]
+    assert isinstance(meta.tiempo_estimado_estudio_minutos, int)
+    assert isinstance(meta.conceptos_clave, list)
+
+
+def test_metadatos_valores_por_defecto_seguros():
+    """QA-007: Metadatos debe proveer valores por defecto seguros e independientes (sin mutabilidad compartida)."""
+    meta1 = Metadatos(
+        documento_id="doc-1",
+        perfil_destinatario=PerfilDestinatario.principiante,
+        formato_salida=FormatoSalida.flashcards,
+        nicho=Nicho.general,
+        nivel_detalle=NivelDetalle.didactico,
+        fragmentos_usados=1,
+    )
+    meta2 = Metadatos(
+        documento_id="doc-2",
+        perfil_destinatario=PerfilDestinatario.principiante,
+        formato_salida=FormatoSalida.flashcards,
+        nicho=Nicho.general,
+        nivel_detalle=NivelDetalle.didactico,
+        fragmentos_usados=1,
+    )
+    assert meta1.tiempo_estimado_estudio_minutos >= 1
+    assert meta1.conceptos_clave == []
+    meta1.conceptos_clave.append("Concepto A")
+    assert meta2.conceptos_clave == []  # Evita mutabilidad compartida
+
+
+def test_metadatos_tiempo_estudio_invalido():
+    """QA-007: tiempo_estimado_estudio_minutos debe ser mayor o igual a 1."""
+    with pytest.raises(ValidationError):
+        Metadatos(
+            documento_id="doc-invalid",
+            perfil_destinatario=PerfilDestinatario.principiante,
+            formato_salida=FormatoSalida.tutorial,
+            nicho=Nicho.general,
+            nivel_detalle=NivelDetalle.didactico,
+            fragmentos_usados=1,
+            tiempo_estimado_estudio_minutos=0,
+        )
+

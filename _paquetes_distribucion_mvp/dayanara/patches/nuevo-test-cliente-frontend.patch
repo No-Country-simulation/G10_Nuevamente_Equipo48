@@ -1,0 +1,323 @@
+diff --git a/backend/backend/tests/test_frontend_client.py b/backend/backend/tests/test_frontend_client.py
+new file mode 100644
+index 0000000..333134b
+--- /dev/null
++++ b/backend/backend/tests/test_frontend_client.py
+@@ -0,0 +1,317 @@
++"""
++Tests automatizados para el cliente HTTP y funciones auxiliares de frontend/app.py.
++
++Verifica:
++  - Mapeo de selectores UI a Enums estrictos de FastAPI.
++  - Parseo de mensajes de error de la API (formatos dict, list Pydantic y texto).
++  - Envío correcto a /files/upload con multipart y cabeceras.
++  - Envío correcto a /adaptacion con payload JSON.
++  - Manejo de excepciones (HTTPError, ConnectionError, Timeout).
++"""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import pytest
++import requests
++
++# Asegurar que la raíz del proyecto esté en sys.path para importar frontend.app
++ROOT_DIR = Path(__file__).resolve().parents[2]
++if str(ROOT_DIR) not in sys.path:
++    sys.path.insert(0, str(ROOT_DIR))
++
++from frontend.app import (
++    FORMATO_OPTIONS,
++    NICHO_OPTIONS,
++    NIVEL_OPTIONS,
++    PERFIL_OPTIONS,
++    extract_error_message,
++    request_adaptation,
++    upload_file_to_backend,
++)
++from app.schemas.adaptacion import (
++    FormatoSalida,
++    Nicho,
++    NivelDetalle,
++    PerfilDestinatario,
++)
++
++
++# ---------------------------------------------------------------------------
++# 1. Validación de mapeos de UI frente a los Enums de FastAPI
++# ---------------------------------------------------------------------------
++
++def test_perfil_options_mapean_a_enums_validos():
++    """Todas las opciones de perfil en el frontend deben ser valores válidos de PerfilDestinatario."""
++    enum_values = {e.value for e in PerfilDestinatario}
++    for label, val in PERFIL_OPTIONS.items():
++        assert val in enum_values, f"Opción '{label}' tiene valor inválido '{val}'"
++
++
++def test_formato_options_mapean_a_enums_validos():
++    """Todas las opciones de formato en el frontend deben ser valores válidos de FormatoSalida."""
++    enum_values = {e.value for e in FormatoSalida}
++    for label, val in FORMATO_OPTIONS.items():
++        assert val in enum_values, f"Opción '{label}' tiene valor inválido '{val}'"
++
++
++def test_nicho_options_mapean_a_enums_validos():
++    """Todas las opciones de nicho en el frontend deben ser valores válidos de Nicho."""
++    enum_values = {e.value for e in Nicho}
++    for label, val in NICHO_OPTIONS.items():
++        assert val in enum_values, f"Opción '{label}' tiene valor inválido '{val}'"
++
++
++def test_nivel_options_mapean_a_enums_validos():
++    """Todas las opciones de nivel en el frontend deben ser valores válidos de NivelDetalle."""
++    enum_values = {e.value for e in NivelDetalle}
++    for label, val in NIVEL_OPTIONS.items():
++        assert val in enum_values, f"Opción '{label}' tiene valor inválido '{val}'"
++
++
++# ---------------------------------------------------------------------------
++# 2. Pruebas de parseo de errores (extract_error_message)
++# ---------------------------------------------------------------------------
++
++def test_extract_error_message_formato_dict():
++    """Debe extraer mensaje combinado cuando detail es un dict con 'error' y 'detalle'."""
++    mock_resp = MagicMock(spec=requests.Response)
++    mock_resp.status_code = 415
++    mock_resp.json.return_value = {
++        "detail": {
++            "error": "Tipo de archivo no soportado",
++            "detalle": "MIME recibido: application/vnd.word",
++        }
++    }
++    msg = extract_error_message(mock_resp)
++    assert "Tipo de archivo no soportado" in msg
++    assert "application/vnd.word" in msg
++
++
++def test_extract_error_message_formato_pydantic_list():
++    """Debe formatear errores de validación de Pydantic devueltos en lista."""
++    mock_resp = MagicMock(spec=requests.Response)
++    mock_resp.status_code = 422
++    mock_resp.json.return_value = {
++        "detail": [
++            {"loc": ["body", "documento_id"], "msg": "Field required", "type": "missing"}
++        ]
++    }
++    msg = extract_error_message(mock_resp)
++    assert "body -> documento_id" in msg
++    assert "Field required" in msg
++
++
++def test_extract_error_message_texto_fallback():
++    """Debe retornar el texto plano si la respuesta no es JSON válido."""
++    mock_resp = MagicMock(spec=requests.Response)
++    mock_resp.status_code = 502
++    mock_resp.json.side_effect = ValueError("No JSON")
++    mock_resp.text = "Bad Gateway"
++    msg = extract_error_message(mock_resp)
++    assert "Bad Gateway" in msg
++
++
++# ---------------------------------------------------------------------------
++# 3. Pruebas de upload_file_to_backend
++# ---------------------------------------------------------------------------
++
++def test_upload_file_to_backend_exitoso():
++    """upload_file_to_backend debe enviar el archivo con el campo 'file' y retornar el dict de respuesta."""
++    mock_resp = MagicMock(spec=requests.Response)
++    mock_resp.ok = True
++    mock_resp.status_code = 200
++    mock_resp.json.return_value = {
++        "status": "ok",
++        "documento_id": "doc-uuid-1234",
++        "filename": "manual.pdf",
++        "chunks_indexados": 7,
++        "oci_status": "no_configurado",
++    }
++
++    with patch("requests.post", return_value=mock_resp) as mock_post:
++        resultado = upload_file_to_backend(
++            base_url="http://localhost:8000",
++            filename="manual.pdf",
++            file_bytes=b"%PDF-1.4...",
++            mime_type="application/pdf",
++        )
++
++        assert resultado["status"] == "ok"
++        assert resultado["documento_id"] == "doc-uuid-1234"
++        assert resultado["chunks_indexados"] == 7
++
++        mock_post.assert_called_once()
++        args, kwargs = mock_post.call_args
++        assert args[0] == "http://localhost:8000/api/v1/files/upload"
++        assert "files" in kwargs
++        assert "file" in kwargs["files"]
++
++
++def test_upload_file_to_backend_error_http_lanza_excepcion():
++    """upload_file_to_backend debe lanzar HTTPError si el backend retorna código 4xx/5xx."""
++    mock_resp = MagicMock(spec=requests.Response)
++    mock_resp.ok = False
++    mock_resp.status_code = 415
++    mock_resp.json.return_value = {
++        "detail": {"error": "Formato inválido", "detalle": "Solo PDF/MD/TXT"}
++    }
++
++    with patch("requests.post", return_value=mock_resp):
++        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
++            upload_file_to_backend(
++                base_url="http://localhost:8000",
++                filename="archivo.docx",
++                file_bytes=b"PK...",
++            )
++        assert "415" in str(exc_info.value)
++        assert "Formato inválido" in str(exc_info.value)
++
++
++# ---------------------------------------------------------------------------
++# 4. Pruebas de request_adaptation
++# ---------------------------------------------------------------------------
++
++def test_request_adaptation_exitoso():
++    """request_adaptation debe enviar el payload JSON con todos los parámetros y retornar la respuesta."""
++    mock_resp = MagicMock(spec=requests.Response)
++    mock_resp.ok = True
++    mock_resp.status_code = 200
++    mock_resp.json.return_value = {
++        "status": "ok",
++        "document_id": "doc-uuid-1234",
++        "metadatos": {
++            "documento_id": "doc-uuid-1234",
++            "perfil_destinatario": "principiante",
++            "formato_salida": "tutorial",
++            "nicho": "general",
++            "nivel_detalle": "didactico",
++            "fragmentos_usados": 3,
++            "tiempo_estimado_estudio_minutos": 12,
++            "conceptos_clave": ["Concepto A", "Concepto B"],
++        },
++        "contenido_adaptado": "Paso 1: Explicación...",
++        "evaluacion_calidad": {
++            "anclaje_fuente_score": 0.88,
++            "fragmentos_evaluados": 3,
++            "nivel_confianza": "alto",
++        },
++        "fuentes": [],
++        "almacenamiento_oci": {"status_upload": "no_configurado"},
++    }
++
++    with patch("requests.post", return_value=mock_resp) as mock_post:
++        resultado = request_adaptation(
++            base_url="http://localhost:8000",
++            documento_id="doc-uuid-1234",
++            perfil="principiante",
++            formato="tutorial",
++            nicho="general",
++            nivel="didactico",
++        )
++
++        assert resultado["status"] == "ok"
++        assert resultado["metadatos"]["tiempo_estimado_estudio_minutos"] == 12
++        assert resultado["evaluacion_calidad"]["anclaje_fuente_score"] == 0.88
++
++        mock_post.assert_called_once()
++        args, kwargs = mock_post.call_args
++        assert args[0] == "http://localhost:8000/api/v1/adaptacion"
++        payload = kwargs["json"]
++        assert payload["documento_id"] == "doc-uuid-1234"
++        assert payload["perfil_destinatario"] == "principiante"
++        assert payload["formato_salida"] == "tutorial"
++        assert payload["nicho"] == "general"
++        assert payload["nivel_detalle"] == "didactico"
++
++
++def test_request_adaptation_error_503_servicio_no_disponible():
++    """request_adaptation debe lanzar HTTPError con detalle cuando el servicio LLM no está configurado."""
++    mock_resp = MagicMock(spec=requests.Response)
++    mock_resp.ok = False
++    mock_resp.status_code = 503
++    mock_resp.json.return_value = {
++        "detail": {
++            "error": "Servicio de Agentes no disponible.",
++            "detalle": "El servicio LLM requerido no está configurado correctamente.",
++        }
++    }
++
++    with patch("requests.post", return_value=mock_resp):
++        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
++            request_adaptation(
++                base_url="http://localhost:8000",
++                documento_id="doc-uuid-1234",
++                perfil="junior",
++                formato="quiz",
++                nicho="fintech",
++                nivel="tecnico",
++            )
++        assert "503" in str(exc_info.value)
++        assert "Servicio de Agentes no disponible" in str(exc_info.value)
++
++
++# ---------------------------------------------------------------------------
++# 5. Prueba de integración del flujo de extremo a extremo
++# ---------------------------------------------------------------------------
++
++def test_integracion_flujo_completo_con_testclient(client):
++    """
++    Verifica el flujo integrado cliente-servidor:
++    1. Subir archivo PDF sintético a /api/v1/files/upload.
++    2. Usar el documento_id obtenido para llamar a /api/v1/adaptacion con las opciones mapeadas del frontend.
++    3. Validar que la respuesta contiene la estructura completa esperada por el frontend.
++    """
++    import fitz
++
++    # Configurar mock de extracción de texto
++    client.app.state.document_service.extract_text.return_value = (
++        "Documento tecnico para prueba de integracion Streamlit-FastAPI. "
++        "Describe arquitecturas de software educativo y procesamiento de lenguaje natural."
++    )
++
++    # Generar PDF sintético en memoria
++    doc = fitz.open()
++    page = doc.new_page()
++    page.insert_text(
++        (50, 72),
++        "Documento tecnico para prueba de integracion Streamlit-FastAPI.",
++    )
++    pdf_bytes = doc.tobytes()
++    doc.close()
++
++    # Paso 1: Simular upload desde frontend
++    upload_res = client.post(
++        "/api/v1/files/upload",
++        files={"file": ("test_doc.pdf", pdf_bytes, "application/pdf")},
++    )
++    assert upload_res.status_code == 200
++    upload_data = upload_res.json()
++    doc_id = upload_data["documento_id"]
++    assert doc_id
++    assert upload_data["chunks_indexados"] >= 1
++
++    # Paso 2: Simular llamada de adaptación con opciones del frontend
++    payload = {
++        "documento_id": doc_id,
++        "perfil_destinatario": PERFIL_OPTIONS["Principiante / Transición"],
++        "formato_salida": FORMATO_OPTIONS["Flashcards Interactivas"],
++        "nicho": NICHO_OPTIONS["FinTech y Banca Digital"],
++        "nivel_detalle": NIVEL_OPTIONS["Didáctico (Fundamentos y conceptos)"],
++    }
++    adapt_res = client.post("/api/v1/adaptacion", json=payload)
++    assert adapt_res.status_code == 200
++    adapt_data = adapt_res.json()
++
++    # Paso 3: Validar que todos los campos requeridos por el frontend están presentes
++    assert "metadatos" in adapt_data
++    assert "evaluacion_calidad" in adapt_data
++    assert "contenido_adaptado" in adapt_data
++    assert "tiempo_estimado_estudio_minutos" in adapt_data["metadatos"]
++    assert "conceptos_clave" in adapt_data["metadatos"]
++    assert "anclaje_fuente_score" in adapt_data["evaluacion_calidad"]
++    assert "nivel_confianza" in adapt_data["evaluacion_calidad"]
++

@@ -18,6 +18,7 @@ Los métodos ingest_document, retrieve y document_exists se añaden en la tarea 
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 
@@ -81,14 +82,31 @@ class RAGService:
         # el motor de embeddings.
 
         self._use_openai_embeddings = False
-        self._sentence_transformer = self._cargar_sentence_transformer(
-            settings.embedding_model
-        )
+        self._sentence_transformer = None
+        self._model_lock = threading.Lock()
 
-        logger.info(
-            "RAGService: usando embeddings locales SentenceTransformer (modelo=%s)",
-            settings.embedding_model,
-        )
+    @property
+    def sentence_transformer(self):
+        """
+        Retorna la instancia de SentenceTransformer, cargándola bajo demanda
+        (lazy loading) en la primera llamada de forma thread-safe para no bloquear el inicio de la app.
+        """
+        if self._sentence_transformer is None:
+            with self._model_lock:
+                if self._sentence_transformer is None:
+                    try:
+                        self._sentence_transformer = self._cargar_sentence_transformer(
+                            self._settings.embedding_model
+                        )
+                    except Exception as exc:
+                        if isinstance(exc, RuntimeError):
+                            raise
+                        raise RuntimeError(
+                            f"No se pudo cargar el modelo de embeddings '{self._settings.embedding_model}'. "
+                            f"Detalle: {exc}"
+                        ) from exc
+        return self._sentence_transformer
+
     # ------------------------------------------------------------------
     # Método auxiliar privado: carga del modelo local
     # ------------------------------------------------------------------
@@ -115,7 +133,10 @@ class RAGService:
                 modelo,
                 exc,
             )
-            raise
+            raise RuntimeError(
+                f"No se pudo cargar el modelo de embeddings '{modelo}'. "
+                f"Detalle: {exc}"
+            ) from exc
 
     # ------------------------------------------------------------------
     # chunk_text: segmentación de texto en fragmentos de tamaño controlado
@@ -269,7 +290,7 @@ class RAGService:
         Returns:
             Array numpy de dtype float32 con forma (N, dim).
         """
-        vectores = self._sentence_transformer.encode(
+        vectores = self.sentence_transformer.encode(
             texts,
             show_progress_bar=False,
             convert_to_numpy=True,
@@ -291,6 +312,19 @@ class RAGService:
             True si hay al menos un chunk con ese documento_id; False si no hay ninguno.
         """
         return any(c.documento_id == documento_id for c in self._chunks)
+
+    def list_indexed_documents(self) -> dict[str, int]:
+        """
+        Retorna un diccionario con los identificadores de documentos actualmente
+        indexados en el motor RAG y la cantidad de chunks de cada uno.
+
+        Returns:
+            Dict[documento_id, num_chunks]
+        """
+        counts: dict[str, int] = {}
+        for c in self._chunks:
+            counts[c.documento_id] = counts.get(c.documento_id, 0) + 1
+        return counts
 
     # ------------------------------------------------------------------
     # ingest_document: ingesta de un documento en el índice FAISS
@@ -404,34 +438,54 @@ class RAGService:
 
         query_embedding = self.generate_embeddings([query])  # shape (1, dim)
 
-        candidatos = top_k * 3
-        distances, indices = self._index.search(query_embedding, candidatos)
+        # 1. Obtener los indices globales de los chunks pertenecientes al documento
+        indices_doc = [
+            i for i, chunk in enumerate(self._chunks)
+            if chunk.documento_id == documento_id
+        ]
 
-        # distances e indices tienen shape (1, candidatos) → aplanar
-        distancias_flat = distances[0]
-        indices_flat = indices[0]
+        if not indices_doc:
+            return []
 
-        # Filtrar por documento_id y descartar índices inválidos (-1)
-        resultados: list[tuple[float, ChunkMetadata]] = []
-        for idx, score in zip(indices_flat, distancias_flat):
-            if idx < 0:
-                continue
-            chunk = self._chunks[idx]
-            if chunk.documento_id == documento_id:
-                resultados.append((float(score), chunk))
+        # 2. Reconstruir los vectores de los chunks del documento desde FAISS
+        # IndexFlatIP almacena los vectores normalizados L2 sin perdida
+        try:
+            doc_vectors = np.array(
+                [self._index.reconstruct(idx) for idx in indices_doc],
+                dtype=np.float32,
+            )
+            # Producto interno de vectores normalizados L2 equivale a similitud coseno
+            scores = (query_embedding @ doc_vectors.T)[0]
+            scores_indices = list(zip(scores, indices_doc))
+        except Exception as exc:
+            logger.warning(
+                "retrieve: error al reconstruir vectores desde FAISS (%s). "
+                "Recurriendo a busqueda ampliada en indice.",
+                exc,
+            )
+            # Fallback en caso de backend FAISS sin soporte reconstruct
+            candidatos = max(top_k * 5, len(indices_doc) * 2, len(self._chunks))
+            distances, indices = self._index.search(query_embedding, min(candidatos, len(self._chunks)))
+            distancias_flat = distances[0]
+            indices_flat = indices[0]
+            scores_indices = [
+                (float(sc), idx)
+                for sc, idx in zip(distancias_flat, indices_flat)
+                if idx in indices_doc
+            ]
 
-        # Ordenar por score descendente y tomar los top_k
-        resultados.sort(key=lambda x: x[0], reverse=True)
-        resultados = resultados[:top_k]
+        # 3. Ordenar por score descendente y tomar los top_k
+        scores_indices.sort(key=lambda x: x[0], reverse=True)
+        seleccionados = scores_indices[:top_k]
 
-        # Construir ChunkMetadata con score asignado
+        # 4. Construir ChunkMetadata con score asignado
         return [
             ChunkMetadata(
-                chunk_id=chunk.chunk_id,
-                documento_id=chunk.documento_id,
-                texto=chunk.texto,
-                posicion=chunk.posicion,
-                score=score,
+                chunk_id=self._chunks[idx].chunk_id,
+                documento_id=self._chunks[idx].documento_id,
+                texto=self._chunks[idx].texto,
+                posicion=self._chunks[idx].posicion,
+                score=float(score),
             )
-            for score, chunk in resultados
+            for score, idx in seleccionados
         ]

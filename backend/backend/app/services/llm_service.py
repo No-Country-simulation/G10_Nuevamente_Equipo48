@@ -6,7 +6,11 @@ El proveedor y el modelo se seleccionan a través de variables de entorno, sin
 hardcodear ninguna clave de API en el código.
 """
 
+import json
 import logging
+import random
+import time
+from dataclasses import dataclass
 
 from app.core.config import Settings
 from app.core.exceptions import (
@@ -16,9 +20,34 @@ from app.core.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+telemetry_logger = logging.getLogger("app.telemetry")
 
 # Conjunto de proveedores LLM soportados por el sistema
 VALID_PROVIDERS = {"openai", "google_gemini"}
+
+# Constantes de política de reintento para llamadas a Gemini
+MAX_RETRIES = 3  # Hasta 3 intentos totales (1 inicial + 2 reintentos)
+MAX_TOTAL_WAIT_SECONDS = 8.0  # Límite máximo de espera acumulada
+BASE_WAIT_SECONDS = 2.0  # Base para backoff exponencial (2s, 4s...)
+JITTER_RATIO = 0.2  # Variación aleatoria +/- 20%
+
+
+@dataclass(frozen=True)
+class LLMTelemetry:
+    """
+    Estructura inmutable que transporta la telemetría de una llamada al LLM
+    sin retener estado en atributos compartidos de la clase (aislamiento concurrente).
+    """
+
+    modelo: str
+    tokens_entrada: int | None = None
+    tokens_salida: int | None = None
+    tokens_total: int | None = None
+    latencia_llamada_segundos: float = 0.0
+    latencia_total_segundos: float = 0.0
+    intentos: int = 1
+    estado_final: str = "exitoso"
+    error_detalle: str | None = None
 
 
 class LLMService:
@@ -69,14 +98,31 @@ class LLMService:
     def generate(self, prompt: str, system_prompt: str = "") -> str:
         """
         Genera texto usando el proveedor LLM configurado.
+        Conserva el contrato histórico retornando exclusivamente un string.
 
         Args:
             prompt:        Mensaje principal enviado al modelo (rol de usuario).
             system_prompt: Instrucciones de contexto para el modelo (rol de sistema).
-                           Si está vacío, no se incluye en la solicitud.
 
         Returns:
             Texto generado por el modelo como string.
+        """
+        texto, _ = self.generate_with_telemetry(prompt, system_prompt)
+        return texto
+
+    def generate_with_telemetry(
+        self, prompt: str, system_prompt: str = ""
+    ) -> tuple[str, LLMTelemetry]:
+        """
+        Genera texto y retorna la tupla (texto, telemetria) garantizando
+        aislamiento thread-safe entre solicitudes concurrentes.
+
+        Args:
+            prompt:        Mensaje principal enviado al modelo (rol de usuario).
+            system_prompt: Instrucciones de contexto para el modelo (rol de sistema).
+
+        Returns:
+            Tupla (texto_generado, objeto_telemetria).
 
         Raises:
             LLMNotConfiguredError: Si `LLM_API_KEY` está ausente o vacía.
@@ -93,11 +139,10 @@ class LLMService:
 
         try:
             if self._settings.llm_provider == "openai":
-                return self._generate_openai(prompt, system_prompt)
+                return self._generate_openai_with_telemetry(prompt, system_prompt)
             else:  # google_gemini
-                return self._generate_gemini(prompt, system_prompt)
+                return self._generate_gemini_with_telemetry(prompt, system_prompt)
         except (LLMNotConfiguredError, LLMGenerationError):
-            # Re-lanzar excepciones propias sin envolver
             raise
         except Exception as exc:
             logger.error(
@@ -115,49 +160,56 @@ class LLMService:
     # Implementaciones privadas por proveedor
     # ------------------------------------------------------------------
 
-    def _generate_openai(self, prompt: str, system_prompt: str) -> str:
-        """
-        Genera texto utilizando la API de OpenAI (chat completions).
-
-        Args:
-            prompt:        Contenido del mensaje de usuario.
-            system_prompt: Instrucciones para el rol de sistema.
-                           Si está vacío, no se añade el mensaje de sistema.
-
-        Returns:
-            Texto generado por el modelo.
-
-        Raises:
-            LLMNotConfiguredError: Si la clave de API es inválida o fue revocada.
-            LLMGenerationError:    Si la llamada a la API falla por cualquier otra razón.
-        """
+    def _generate_openai_with_telemetry(
+        self, prompt: str, system_prompt: str
+    ) -> tuple[str, LLMTelemetry]:
+        """Genera texto con OpenAI y extrae telemetría de tokens si está disponible."""
         try:
-            import openai  # Importación diferida para evitar error si no está instalado
+            import openai  # Importación diferida
         except ImportError as exc:
             raise LLMGenerationError(
                 message="Error al generar contenido con el LLM.",
                 detail="El paquete 'openai' no está instalado. Ejecuta: pip install openai",
             ) from exc
 
-        # Construir la lista de mensajes según disponibilidad de system_prompt
         messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        t_inicio = time.time()
         try:
             client = openai.OpenAI(api_key=self._settings.llm_api_key)
             response = client.chat.completions.create(
                 model=self._settings.llm_model,
                 messages=messages,  # type: ignore[arg-type]
             )
+            latencia = round(time.time() - t_inicio, 4)
             contenido = response.choices[0].message.content
             if contenido is None:
                 raise LLMGenerationError(
                     message="El LLM retornó una respuesta vacía.",
                     detail="La respuesta del modelo no contenía texto en choices[0].message.content.",
                 )
-            return contenido
+
+            # Extraer tokens si existen
+            usage = getattr(response, "usage", None)
+            tokens_in = getattr(usage, "prompt_tokens", None) if usage else None
+            tokens_out = getattr(usage, "completion_tokens", None) if usage else None
+            tokens_tot = getattr(usage, "total_tokens", None) if usage else None
+
+            telemetria = LLMTelemetry(
+                modelo=self._settings.llm_model,
+                tokens_entrada=tokens_in,
+                tokens_salida=tokens_out,
+                tokens_total=tokens_tot,
+                latencia_llamada_segundos=latencia,
+                latencia_total_segundos=latencia,
+                intentos=1,
+                estado_final="exitoso",
+            )
+            self._registrar_telemetria_segura(telemetria)
+            return contenido, telemetria
 
         except openai.AuthenticationError as exc:
             raise LLMNotConfiguredError(
@@ -175,20 +227,12 @@ class LLMService:
                 detail=f"Error en la API de OpenAI: {exc}",
             ) from exc
 
-    def _generate_gemini(self, prompt: str, system_prompt: str) -> str:
+    def _generate_gemini_with_telemetry(
+        self, prompt: str, system_prompt: str
+    ) -> tuple[str, LLMTelemetry]:
         """
-        Genera texto utilizando la API de Google Gemini (Generative AI).
-
-        Args:
-            prompt:        Contenido principal del mensaje.
-            system_prompt: Instrucciones de contexto. Si no está vacío, se
-                           antepone al prompt separado por dos saltos de línea.
-
-        Returns:
-            Texto generado por el modelo.
-
-        Raises:
-            LLMGenerationError: Si la llamada a la API de Gemini falla.
+        Genera texto con Google Gemini implementando política de reintentos acotada
+        ante errores 429 transitorios y extracción segura de usage_metadata.
         """
         try:
             import google.generativeai as genai  # Importación diferida
@@ -201,21 +245,192 @@ class LLMService:
                 ),
             ) from exc
 
-        # Construir el prompt completo: system_prompt (si existe) + prompt de usuario
+        # Construir el prompt completo
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{prompt}"
         else:
             full_prompt = prompt
 
-        try:
-            genai.configure(api_key=self._settings.llm_api_key)
-            modelo = genai.GenerativeModel(self._settings.llm_model)
-            response = modelo.generate_content(full_prompt)
-            return response.text
+        genai.configure(api_key=self._settings.llm_api_key, transport="rest")
+        modelo = genai.GenerativeModel(self._settings.llm_model)
 
-        except Exception as exc:
-            logger.error("Error al invocar Google Gemini: %s", exc, exc_info=True)
-            raise LLMGenerationError(
-                message="Error al generar contenido con el LLM.",
-                detail=f"Error en la API de Google Gemini: {exc}",
-            ) from exc
+        t_inicio_total = time.time()
+        espera_acumulada = 0.0
+
+        for intento in range(1, MAX_RETRIES + 1):
+            t_inicio_llamada = time.time()
+            try:
+                response = modelo.generate_content(
+                    full_prompt,
+                    request_options={"timeout": 60},
+                )
+                latencia_llamada = round(time.time() - t_inicio_llamada, 4)
+                latencia_total = round(time.time() - t_inicio_total, 4)
+
+                # Extraer usage_metadata de forma defensiva
+                usage = getattr(response, "usage_metadata", None)
+                tokens_in = getattr(usage, "prompt_token_count", None) if usage else None
+                tokens_out = getattr(usage, "candidates_token_count", None) if usage else None
+                tokens_tot = getattr(usage, "total_token_count", None) if usage else None
+
+                estado = "exitoso" if intento == 1 else "429_transitorio_recuperado"
+                telemetria = LLMTelemetry(
+                    modelo=self._settings.llm_model,
+                    tokens_entrada=tokens_in,
+                    tokens_salida=tokens_out,
+                    tokens_total=tokens_tot,
+                    latencia_llamada_segundos=latencia_llamada,
+                    latencia_total_segundos=latencia_total,
+                    intentos=intento,
+                    estado_final=estado,
+                )
+                self._registrar_telemetria_segura(telemetria)
+                return response.text, telemetria
+
+            except Exception as exc:
+                latencia_llamada = round(time.time() - t_inicio_llamada, 4)
+                es_reintentable, es_cuota_agotada, retry_after = self._analizar_excepcion_gemini(exc)
+
+                if es_cuota_agotada:
+                    latencia_total = round(time.time() - t_inicio_total, 4)
+                    telemetria = LLMTelemetry(
+                        modelo=self._settings.llm_model,
+                        latencia_llamada_segundos=latencia_llamada,
+                        latencia_total_segundos=latencia_total,
+                        intentos=intento,
+                        estado_final="cuota_agotada",
+                        error_detalle="Cuota de solicitudes o crédito del modelo agotada.",
+                    )
+                    self._registrar_telemetria_segura(telemetria)
+                    logger.warning("Cuota de Gemini agotada comprobada. Corte inmediato sin reintentos.")
+                    raise LLMGenerationError(
+                        message="Cuota de servicio LLM agotada.",
+                        detail="La cuota asignada para el modelo de IA ha sido excedida.",
+                    ) from exc
+
+                if not es_reintentable or intento >= MAX_RETRIES:
+                    latencia_total = round(time.time() - t_inicio_total, 4)
+                    telemetria = LLMTelemetry(
+                        modelo=self._settings.llm_model,
+                        latencia_llamada_segundos=latencia_llamada,
+                        latencia_total_segundos=latencia_total,
+                        intentos=intento,
+                        estado_final="error_definitivo",
+                        error_detalle=type(exc).__name__,
+                    )
+                    self._registrar_telemetria_segura(telemetria)
+
+                    if es_reintentable and intento >= MAX_RETRIES:
+                        raise LLMGenerationError(
+                            message="El servicio LLM está temporalmente saturado.",
+                            detail="Se superó el límite de tasa y los reintentos no tuvieron éxito. Intente nuevamente en unos instantes.",
+                        ) from exc
+                    else:
+                        raise LLMGenerationError(
+                            message="Error al generar contenido con el LLM.",
+                            detail=f"Error en la llamada al modelo: {type(exc).__name__}",
+                        ) from exc
+
+                # Calcular tiempo de espera para el siguiente intento
+                tiempo_espera = self._calcular_espera(intento, retry_after)
+                if espera_acumulada + tiempo_espera > MAX_TOTAL_WAIT_SECONDS:
+                    logger.warning(
+                        "Espera acumulada (%0.2fs) superaría el límite (%0.2fs). Cancelando reintentos.",
+                        espera_acumulada + tiempo_espera,
+                        MAX_TOTAL_WAIT_SECONDS,
+                    )
+                    latencia_total = round(time.time() - t_inicio_total, 4)
+                    telemetria = LLMTelemetry(
+                        modelo=self._settings.llm_model,
+                        latencia_llamada_segundos=latencia_llamada,
+                        latencia_total_segundos=latencia_total,
+                        intentos=intento,
+                        estado_final="error_definitivo",
+                        error_detalle="Límite máximo de espera acumulada alcanzado.",
+                    )
+                    self._registrar_telemetria_segura(telemetria)
+                    raise LLMGenerationError(
+                        message="El servicio LLM está temporalmente saturado.",
+                        detail="Tiempo máximo de espera para reintentos alcanzado.",
+                    ) from exc
+
+                espera_acumulada += tiempo_espera
+                logger.info(
+                    "Error transitorio en intento %d/%d (%s). Esperando %0.2fs antes de reintentar.",
+                    intento,
+                    MAX_RETRIES,
+                    type(exc).__name__,
+                    tiempo_espera,
+                )
+                time.sleep(tiempo_espera)
+
+        raise LLMGenerationError(
+            message="Error al generar contenido con el LLM.",
+            detail="Se superó el número máximo de reintentos.",
+        )
+
+    def _analizar_excepcion_gemini(self, exc: Exception) -> tuple[bool, bool, float | None]:
+        """
+        Analiza una excepción retornada por el SDK de Google y determina:
+        (es_reintentable, es_cuota_agotada_definitiva, retry_after_seconds)
+        """
+        exc_name = type(exc).__name__
+        exc_str = str(exc).lower()
+
+        # Detección de cuota diaria / saldo agotado (NO reintentable)
+        patrones_cuota_definitiva = [
+            "quota exceeded for quota metric 'generatecontent requests per day'",
+            "requests per day",
+            "daily quota exceeded",
+            "credit balance",
+            "free tier quota exhausted",
+        ]
+        if any(p in exc_str for p in patrones_cuota_definitiva):
+            return False, True, None
+
+        # Detección de errores transitorios 429 (ResourceExhausted) o de red/servidor (500, 503)
+        es_429 = "resourceexhausted" in exc_name.lower() or "429" in exc_str
+        es_503 = "serviceunavailable" in exc_name.lower() or "503" in exc_str
+        es_500 = "internalservererror" in exc_name.lower() or "500" in exc_str
+
+        if es_429 or es_503 or es_500:
+            # Extraer posible sugerencia de retry_after si existe en el objeto
+            retry_after = getattr(exc, "retry_after", None)
+            return True, False, retry_after
+
+        # Errores definitivos de cliente (400, 403, 404, etc.)
+        return False, False, None
+
+    def _calcular_espera(self, intento: int, retry_after: float | None) -> float:
+        """Calcula el tiempo de backoff exponencial con jitter."""
+        if retry_after is not None and 0 < retry_after <= MAX_TOTAL_WAIT_SECONDS:
+            return retry_after
+
+        # Backoff: BASE * (2 ** (intento - 1)) -> intento 1: 2s, intento 2: 4s...
+        base = BASE_WAIT_SECONDS * (2 ** (intento - 1))
+        # Jitter: +/- JITTER_RATIO
+        jitter = base * JITTER_RATIO * (random.uniform(-1.0, 1.0))
+        return max(0.5, base + jitter)
+
+    def _registrar_telemetria_segura(self, telemetria: LLMTelemetry) -> None:
+        """
+        Registra la telemetría sanitizada en app.telemetry.
+        Nunca expone claves API, prompts, texto generado ni fragmentos de documentos.
+        """
+        payload = {
+            "evento": "llm_generacion",
+            "proveedor": self._settings.llm_provider,
+            "modelo": telemetria.modelo,
+            "tokens_entrada": telemetria.tokens_entrada,
+            "tokens_salida": telemetria.tokens_salida,
+            "tokens_total": telemetria.tokens_total,
+            "latencia_llamada_s": telemetria.latencia_llamada_segundos,
+            "latencia_total_s": telemetria.latencia_total_segundos,
+            "intentos": telemetria.intentos,
+            "estado_final": telemetria.estado_final,
+        }
+        if telemetria.error_detalle:
+            payload["error"] = telemetria.error_detalle
+
+        telemetry_logger.info(json.dumps(payload))
+
