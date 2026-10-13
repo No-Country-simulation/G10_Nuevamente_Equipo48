@@ -1,4 +1,0 @@
-Inventario: inventario/inventario_corpus.csv
-Registros: 22
-ERRORES: 0
-ADVERTENCIAS: 0

@@ -10,59 +10,12 @@ from __future__ import annotations
 
 import pytest
 import numpy as np
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from starlette.testclient import TestClient
 
 from app.services.rag_service import ChunkMetadata
 from app.services.oci_service import OCIUploadResult
-
-
-from contextlib import asynccontextmanager
-from app.main import app
-
-
-# ---------------------------------------------------------------------------
-# Fixture autouse para aislar tests de descargas externas de modelos y lifespan
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def mock_sentence_transformer_loader():
-    """
-    Evita que RAGService intente descargar o cargar SentenceTransformer desde HuggingFace.
-    Retorna un mock uniforme listo para tests.
-    """
-    mock_model = MagicMock()
-    # Retorna un vector normalizado para cualquier texto
-    emb = np.ones((1, 384), dtype=np.float32)
-    emb = emb / np.linalg.norm(emb)
-    mock_model.encode.return_value = emb
-
-    with patch(
-        "app.services.rag_service.RAGService._cargar_sentence_transformer",
-        return_value=mock_model,
-    ):
-        yield mock_model
-
-
-@pytest.fixture(autouse=True)
-def isolate_app_lifespan():
-    """
-    Aísla las pruebas de la ejecución de lifespan en TestClient.
-    Evita que el arranque de FastAPI sobrescriba los servicios mockeados en app.state
-    o intente inicializar recursos externos no deseados.
-    """
-    @asynccontextmanager
-    async def noop_lifespan(application):
-        yield
-
-    original_lifespan = app.router.lifespan_context
-    app.router.lifespan_context = noop_lifespan
-    try:
-        yield
-    finally:
-        app.router.lifespan_context = original_lifespan
 
 
 # ---------------------------------------------------------------------------

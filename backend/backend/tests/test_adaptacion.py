@@ -189,16 +189,6 @@ class TestAdaptacionEndpoint:
         assert data["metadatos"]["nicho"] == REQUEST_VALIDO["nicho"]
         assert data["metadatos"]["nivel_detalle"] == REQUEST_VALIDO["nivel_detalle"]
 
-    def test_metadatos_contienen_campos_educativos_qa_007(self, client_con_mocks):
-        """QA-007: Los metadatos de la respuesta deben contener tiempo_estimado_estudio_minutos y conceptos_clave."""
-        response = client_con_mocks.post("/api/v1/adaptacion", json=REQUEST_VALIDO)
-        data = response.json()
-        assert "tiempo_estimado_estudio_minutos" in data["metadatos"]
-        assert "conceptos_clave" in data["metadatos"]
-        assert isinstance(data["metadatos"]["tiempo_estimado_estudio_minutos"], int)
-        assert data["metadatos"]["tiempo_estimado_estudio_minutos"] >= 1
-        assert isinstance(data["metadatos"]["conceptos_clave"], list)
-
     def test_document_id_en_respuesta_coincide_con_request(self, client_con_mocks):
         """El document_id de la respuesta debe coincidir con el enviado en el request."""
         response = client_con_mocks.post("/api/v1/adaptacion", json=REQUEST_VALIDO)

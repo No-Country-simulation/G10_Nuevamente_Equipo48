@@ -8,7 +8,7 @@ cuerpo de respuesta.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
@@ -71,7 +71,6 @@ class AdaptacionRequest(BaseModel):
 
     documento_id: str = Field(
         ...,
-        min_length=1,
         description="ID único del documento previamente cargado en el sistema.",
     )
     perfil_destinatario: PerfilDestinatario = Field(
@@ -138,32 +137,11 @@ class Metadatos(BaseModel):
         ..., description="Nivel de detalle especificado en el request."
     )
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=datetime.utcnow,
         description="Fecha y hora UTC en que se generó el contenido.",
     )
     fragmentos_usados: int = Field(
         ..., description="Número de fragmentos del documento utilizados en la generación."
-    )
-    tiempo_estimado_estudio_minutos: int = Field(
-        default=10,
-        ge=1,
-        description="Tiempo estimado de estudio en minutos calculado para el contenido pedagógico.",
-    )
-    conceptos_clave: list[str] = Field(
-        default_factory=list,
-        description="Lista de conceptos clave identificados en el contenido adaptado.",
-    )
-    tokens_entrada: int | None = Field(
-        default=None,
-        description="Tokens de entrada del prompt reportados por el proveedor LLM.",
-    )
-    tokens_salida: int | None = Field(
-        default=None,
-        description="Tokens de salida de la respuesta reportados por el proveedor LLM.",
-    )
-    latencia_segundos: float | None = Field(
-        default=None,
-        description="Latencia total en segundos de la llamada al modelo LLM.",
     )
 
 

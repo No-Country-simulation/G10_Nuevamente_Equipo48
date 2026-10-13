@@ -42,13 +42,7 @@ async def generar_contenido(
         AdaptacionResponse con el contenido generado y metadatos de evaluación.
     """
     # Obtener el agente orquestador desde el estado de la aplicación
-    agent_service = getattr(request.app.state, "agent_service", None)
-
-    if agent_service is None:
-        raise LLMNotConfiguredError(
-            message="Servicio de Agentes no disponible.",
-            detail="El servicio LLM requerido no está configurado correctamente."
-        )
+    agent_service: AgentService = request.app.state.agent_service
 
     try:
         return agent_service.generate_content(adaptacion_request)

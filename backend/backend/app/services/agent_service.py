@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-import unicodedata
 
 import numpy as np
 
@@ -68,10 +66,7 @@ _INSTRUCCIONES_PERFIL: dict[str, str] = {
 _INSTRUCCIONES_FORMATO: dict[str, str] = {
     "tutorial": (
         "Estructura el contenido como pasos numerados con: titulo del paso, explicacion, "
-        "ejemplo o accion concreta, resultado esperado. Incluye prerequisitos al inicio. "
-        "Si la fuente corresponde a un concepto u oficio administrativo en instancia consultiva, "
-        "explicita su alcance orientador no vinculante y distinguelo claramente de las circulares, "
-        "leyes o decretos de caracter vinculante que cite."
+        "ejemplo o accion concreta, resultado esperado. Incluye prerequisitos al inicio."
     ),
     "flashcards": (
         "Genera una lista JSON de tarjetas con estructura: "
@@ -322,29 +317,7 @@ class AgentService:
         )
 
         # 5. Invocar el LLM (puede lanzar LLMNotConfiguredError o LLMGenerationError)
-        # Selección determinista del método de generación:
-        # Se prefiere generate_with_telemetry si está implementado a nivel de clase o explícitamente en el mock.
-        # Nunca se atrapa TypeError interno para evitar dobles llamadas accidentales.
-        telemetria = None
-        tiene_telemetria = (
-            hasattr(type(self.llm), "generate_with_telemetry")
-            and callable(getattr(type(self.llm), "generate_with_telemetry"))
-        ) or (
-            hasattr(self.llm, "_mock_children")
-            and "generate_with_telemetry" in getattr(self.llm, "_mock_children", {})
-        )
-
-        if tiene_telemetria:
-            res = self.llm.generate_with_telemetry(user_prompt, system_prompt)
-            if not (isinstance(res, tuple) and len(res) == 2):
-                raise TypeError(
-                    f"El método generate_with_telemetry debe retornar una tupla de 2 elementos "
-                    f"(contenido, telemetria), pero retornó {type(res).__name__}."
-                )
-            contenido_raw, telemetria = res
-        else:
-            contenido_raw = self.llm.generate(user_prompt, system_prompt)
-
+        contenido_raw = self.llm.generate(user_prompt, system_prompt)
         logger.info(
             "generate_content: contenido generado (%d caracteres) para documento_id=%s",
             len(contenido_raw),
@@ -377,10 +350,6 @@ class AgentService:
             request.documento_id,
         )
 
-        # 9b. Metadatos educativos (QA-007)
-        tiempo_estudio = _estimar_tiempo_estudio(contenido_raw, request.formato_salida.value)
-        conceptos = _extraer_conceptos_clave(contenido_raw, chunks)
-
         # 10. Construir y retornar la respuesta completa
         return AdaptacionResponse(
             status="ok",
@@ -392,11 +361,6 @@ class AgentService:
                 nicho=request.nicho,
                 nivel_detalle=request.nivel_detalle,
                 fragmentos_usados=len(chunks),
-                tiempo_estimado_estudio_minutos=tiempo_estudio,
-                conceptos_clave=conceptos,
-                tokens_entrada=telemetria.tokens_entrada if telemetria else None,
-                tokens_salida=telemetria.tokens_salida if telemetria else None,
-                latencia_segundos=telemetria.latencia_total_segundos if telemetria else None,
             ),
             contenido_adaptado=contenido_adaptado,
             evaluacion_calidad=EvaluacionCalidad(
@@ -490,192 +454,3 @@ def _extraer_json_de_markdown(texto: str) -> str:
                 return stripped[inicio_contenido:cierre].strip()
 
     return texto
-
-
-# ---------------------------------------------------------------------------
-# Funciones auxiliares: metadatos educativos (QA-007)
-# ---------------------------------------------------------------------------
-
-def _estimar_tiempo_estudio(contenido_raw: str, formato: str) -> int:
-    """
-    Estima el tiempo de estudio en minutos a partir de la extension y formato del contenido.
-    Basado en lectura analitica tecnica (~150 palabras/minuto), con minimo de 5 minutos
-    y maximo de 60 minutos.
-    """
-    palabras = len(contenido_raw.split())
-    if formato in ("quiz", "flashcards"):
-        lineas_items = max(1, contenido_raw.count('"pregunta"') or contenido_raw.count("?"))
-        return max(5, min(60, lineas_items * 2))
-    minutos = max(5, round(palabras / 150))
-    return min(60, minutos)
-
-
-_STOPWORDS_CONCEPTOS = {
-    "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del", "a", "al", "en",
-    "para", "por", "con", "sin", "sobre", "entre", "tras", "durante", "mediante",
-    "que", "como", "cual", "cuales", "donde", "cuando", "este", "esta", "estos", "estas",
-    "ese", "esa", "esos", "esas", "aquel", "aquella", "aquello", "aquellos", "aquellas",
-    "paso", "etapa", "fase", "parte", "nota", "ejemplo", "resumen", "tutorial", "guia",
-    "introduccion", "conclusion", "objetivo", "prerrequisito", "prerrequisitos", "modulo",
-    "tema", "titulo", "seccion", "contenido", "descripcion", "explicacion", "resultado",
-    "accion", "proceso", "definicion", "termino", "terminos", "glosario", "documento",
-    # Ordinales
-    "primero", "primera", "primeros", "primeras",
-    "segundo", "segunda", "segundos", "segundas",
-    "tercero", "tercera", "terceros", "terceras",
-    "cuarto", "cuarta", "cuartos", "cuartas",
-    "quinto", "quinta", "quintos", "quintas",
-    # Conectores discursivos, adverbios y marcadores
-    "asi", "asimismo", "ademas", "tambien", "incluso", "entonces", "luego",
-    "finalmente", "respecto", "conforme", "segun", "dado", "debido", "tanto",
-    # Verbos existenciales, auxiliares y modales genéricos
-    "existe", "existen", "cuenta", "cuentan", "debe", "deben", "puede", "pueden",
-    "tiene", "tienen", "presenta", "presentan", "realiza", "realizan", "incluye", "incluyen",
-    # Términos procedimentales / genéricos regulatorios o de interrogación
-    "pregunta", "preguntas", "respuesta", "respuestas", "consulta", "consultas",
-    "articulo", "articulos", "capitulo", "capitulos", "numeral", "numerales",
-    "paragrafo", "paragrafos", "literal", "literales", "caso", "casos",
-    # Términos bibliográficos, referencias de pie de página y metadatos de cita
-    "disponible en", "disponible", "recuperado", "consultado", "fuente", "fuentes",
-    "pagina", "paginas", "pag", "edicion", "editorial", "autor", "autores",
-    "ibidem", "op cit", "enlace", "url", "sitio web", "sitio",
-}
-
-
-def _extraer_conceptos_clave(contenido_raw: str, chunks: list[ChunkMetadata]) -> list[str]:
-    """
-    Extrae conceptos clave verificables y pedagógicamente relevantes.
-
-    Estrategia determinista jerárquica con complementación multinivel:
-      1. Extrae términos destacados en negrita Markdown (`**término**`) en el texto generado.
-      2. Si no alcanza el rango objetivo (< 4 conceptos), complementa con términos definidos
-         explícitamente (`Término:` o `- Término:`).
-      3. Si aún tiene < 4 conceptos, complementa con estructuras JSON (`concepto`, `titulo`, `tema`, `frente`).
-      4. Si aún tiene < 4 conceptos, complementa recurriendo a fragmentos fuente (`chunks`):
-         4a. Negritas en chunks fuente.
-         4b. Definiciones explícitas en chunks fuente.
-         4c. Términos técnicos compuestos o sustantivos capitalizados no aislados de inicio de frase.
-      5. Normaliza y filtra palabras vacías (stopwords normalizadas sin tildes),
-         longitud (< 3 o > 40), deduplica preservando orden, descarta subcadenas redundantes,
-         descarta términos truncados incompletos y limita a un máximo de 8 conceptos.
-      6. Si no existe contenido ni en la fuente ni en el texto generado, retorna lista vacía [].
-    """
-    conceptos: list[str] = []
-    vistos: set[str] = set()
-
-    def _normalizar(s: str) -> str:
-        s_lower = s.lower().strip()
-        return "".join(
-            c for c in unicodedata.normalize("NFD", s_lower)
-            if unicodedata.category(c) != "Mn"
-        )
-
-    # Precomputar stopwords normalizadas para chequeo uniforme sin tildes
-    stopwords_norm = {_normalizar(w) for w in _STOPWORDS_CONCEPTOS}
-
-    def _es_termino_valido(term: str) -> bool:
-        t_clean = term.strip().strip(".:;,-\"'`()")
-        if len(t_clean) < 3 or len(t_clean) > 40:
-            return False
-        t_norm = _normalizar(t_clean)
-        if t_clean.lower() in _STOPWORDS_CONCEPTOS or t_norm in stopwords_norm:
-            return False
-        if t_clean.lower() in vistos or t_norm in vistos:
-            return False
-        if t_clean.startswith("http") or t_clean.isdigit():
-            return False
-        # Descartar si son solo números o palabras genéricas de paso (ej: "Paso 1")
-        if re.match(r"^(?:paso|etapa|fase)\s*\d+$", t_norm):
-            return False
-        # Descartar términos truncados que terminan en partículas o abreviaturas (ej: "Circular Externa No")
-        if re.search(r"\b(?:no|num|nro|del|de|la|el|en|y)\b$", t_clean, re.IGNORECASE):
-            return False
-        # Si es una sola palabra con solo números o caracteres especiales
-        if not re.search(r"[a-zA-ZáéíóúÁÉÍÓÚñÑ]", t_clean):
-            return False
-        # Si todas las palabras que componen el término son stopwords individuales (ej: "Disponible en")
-        palabras_norm = [_normalizar(w.strip(".:;,-\"'`()")) for w in t_clean.split()]
-        if palabras_norm and all(w in stopwords_norm or w in _STOPWORDS_CONCEPTOS for w in palabras_norm):
-            return False
-        return True
-
-    def _agregar_termino(term: str) -> bool:
-        t_clean = term.strip().strip(".:;,-\"'`()")
-        if _es_termino_valido(t_clean):
-            t_norm = _normalizar(t_clean)
-
-            # Deduplicación por subcadena / supercadena respecto a los conceptos existentes
-            for idx, c_existente in enumerate(conceptos):
-                c_exist_norm = _normalizar(c_existente)
-                # Si el nuevo término es subcadena propia de uno ya existente que tiene más palabras (ej: "Contencioso Administrativo" dentro de "Código Contencioso Administrativo")
-                if len(t_clean.split()) < len(c_existente.split()) and t_norm in c_exist_norm:
-                    return False
-                # Si el nuevo término es más específico y contiene por completo al ya existente (ej: llega "Código Contencioso Administrativo" y ya estaba "Contencioso Administrativo")
-                if len(t_clean.split()) > len(c_existente.split()) and c_exist_norm in t_norm:
-                    # Reemplazar el concepto menos específico por el más completo
-                    vistos.discard(c_existente.lower())
-                    vistos.discard(c_exist_norm)
-                    conceptos[idx] = t_clean
-                    vistos.add(t_clean.lower())
-                    vistos.add(t_norm)
-                    return len(conceptos) >= 8
-
-            vistos.add(t_clean.lower())
-            vistos.add(t_norm)
-            conceptos.append(t_clean)
-            return len(conceptos) >= 8
-        return False
-
-    # 1. Buscar términos resaltados en negrita tipo **concepto** en el contenido generado
-    destacados = re.findall(r"\*\*([a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s_\-]{3,40})\*\*", contenido_raw)
-    for d in destacados:
-        if _agregar_termino(d):
-            return conceptos
-
-    # 2. Complementar con términos antes de dos puntos en listas o glosarios (ej: "- Fotosíntesis: ..." o "Cloroplastos: ...")
-    if len(conceptos) < 4:
-        lineas_definicion = re.findall(r"(?:^|\n)(?:[-*•]\s*)?([A-ZÁÉÍÓÚÑ][a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s_\-]{2,35})\s*:\s*[A-ZÁÉÍÓÚÑa-z0-9]", contenido_raw)
-        for ld in lineas_definicion:
-            if _agregar_termino(ld):
-                return conceptos
-
-    # 3. Complementar con estructuras JSON ("concepto", "titulo", "tema", etc.)
-    if len(conceptos) < 4:
-        claves_json = re.findall(r'"(?:concepto|titulo|tema|frente)":\s*"([^"]{3,40})"', contenido_raw, re.IGNORECASE)
-        for c in claves_json:
-            if _agregar_termino(c):
-                return conceptos
-
-    # 4. Complementar desde fragmentos fuente (chunks)
-    if len(conceptos) < 4 and chunks:
-        texto_fuente = " ".join(c.texto for c in chunks if getattr(c, "texto", None))
-        # 4a. Buscar negritas en la fuente
-        destacados_fuente = re.findall(r"\*\*([a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s_\-]{3,40})\*\*", texto_fuente)
-        for df in destacados_fuente:
-            if _agregar_termino(df):
-                return conceptos
-
-        # 4b. Buscar definiciones en la fuente (Termino: definicion)
-        if len(conceptos) < 4:
-            defs_fuente = re.findall(r"(?:^|\n)(?:[-*•]\s*)?([A-ZÁÉÍÓÚÑ][a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s_\-]{2,35})\s*:\s*", texto_fuente)
-            for dff in defs_fuente:
-                if _agregar_termino(dff):
-                    return conceptos
-
-        # 4c. Buscar términos técnicos en la fuente:
-        # Primero compuestos multipalabra (ej: "Circular Externa", "Oficial de Cumplimiento", "Ciclo de Calvin")
-        if len(conceptos) < 4:
-            compuestos_fuente = re.findall(r"\b([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+(?:de\s+|del\s+)?[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)+)\b", texto_fuente)
-            for cf in compuestos_fuente:
-                if _agregar_termino(cf):
-                    return conceptos
-
-        # Segundo sustantivos técnicos individuales precedidos por minúscula (evita mayúsculas de inicio de frase)
-        if len(conceptos) < 4:
-            sustantivos_internos = re.findall(r"(?<=[a-záéíóúñ]\s)([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{3,30})\b", texto_fuente)
-            for si in sustantivos_internos:
-                if _agregar_termino(si):
-                    return conceptos
-
-    return conceptos
-

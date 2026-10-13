@@ -1,6 +1,0 @@
-{
-  "detail": {
-    "error": "El servicio LLM está temporalmente saturado.",
-    "detalle": "Se superó el límite de tasa y los reintentos no tuvieron éxito. Intente nuevamente en unos instantes."
-  }
-}
