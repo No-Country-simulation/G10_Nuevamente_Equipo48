@@ -202,6 +202,46 @@ def main() -> None:
         .material-icons,
         span:has(> svg) {
             font-family: 'Material Symbols Rounded', 'Material Icons', sans-serif !important;
+            letter-spacing: normal !important;
+            white-space: nowrap !important;
+            word-spacing: normal !important;
+        }
+
+        /* Estilización oscura consistente para acordeones de preguntas (st.expander) */
+        [data-testid="stExpander"] {
+            background-color: rgba(17, 20, 29, 0.8) !important;
+            border: 1px solid #1e293b !important;
+            border-radius: 12px !important;
+            margin-bottom: 12px !important;
+        }
+
+        [data-testid="stExpander"] details {
+            background-color: transparent !important;
+            border-radius: 12px !important;
+        }
+
+        [data-testid="stExpander"] summary {
+            background-color: #11141d !important;
+            color: #f1f5f9 !important;
+            border-radius: 12px !important;
+            padding: 12px 16px !important;
+        }
+
+        [data-testid="stExpander"] summary:hover {
+            background-color: #1a2234 !important;
+            color: #38bdf8 !important;
+        }
+
+        [data-testid="stExpander"] summary p {
+            color: inherit !important;
+            font-weight: 600 !important;
+        }
+
+        [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+            background-color: rgba(10, 14, 23, 0.95) !important;
+            border-top: 1px solid #1e293b !important;
+            padding: 16px !important;
+            color: #e2e8f0 !important;
         }
 
         /* Fondo principal general oscuro para toda la app */
