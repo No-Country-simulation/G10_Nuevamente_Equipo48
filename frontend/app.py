@@ -112,25 +112,47 @@ def upload_file_to_backend(
 
 def request_adaptation(
     base_url: str,
-    documento_id: str,
-    perfil: str,
-    formato: str,
-    nicho: str,
-    nivel: str,
+    documento_id: str | None = None,
+    documento_ids: list[str] | None = None,
+    tema_estudio: str | None = None,
+    perfil: str = "estudiante_secundaria",
+    formato: str = "resumen",
+    nicho: str = "general",
+    nivel: str = "intermedio",
     timeout: int = TIMEOUT_ADAPTACION_SECONDS,
 ) -> dict:
     """
     Envía la solicitud de adaptación pedagógica a POST /api/v1/adaptacion.
+    Soporta Estudio Focalizado con múltiples documentos (`documento_ids`)
+    y tema opcional (`tema_estudio`), manteniendo compatibilidad hacia atrás
+    con `documento_id` individual.
     Retorna el diccionario con la respuesta estructurada completa.
     """
     url = f"{base_url.rstrip('/')}/api/v1/adaptacion"
-    payload = {
-        "documento_id": documento_id,
+
+    # Consolidar lista de documentos y resolver documento_id primario
+    ids_list: list[str] = []
+    if documento_ids:
+        ids_list = [str(did).strip() for did in documento_ids if str(did).strip()]
+    elif documento_id:
+        ids_list = [str(documento_id).strip()]
+
+    primario_id = ids_list[0] if ids_list else (documento_id or "")
+
+    payload: dict = {
+        "documento_id": primario_id,
         "perfil_destinatario": perfil,
         "formato_salida": formato,
         "nicho": nicho,
         "nivel_detalle": nivel,
     }
+
+    if ids_list:
+        payload["documento_ids"] = ids_list
+
+    if tema_estudio and str(tema_estudio).strip():
+        payload["tema_estudio"] = str(tema_estudio).strip()
+
     response = requests.post(url, json=payload, timeout=timeout)
     if not response.ok:
         error_msg = extract_error_message(response)
@@ -432,14 +454,14 @@ def main() -> None:
         index=0,
     )
 
-    selected_corpus_id = None
+    selected_corpus_ids: list[str] = []
     archivo_subido = None
 
     if modo_origen == "📚 Catálogo del Corpus":
         corpus_list = fetch_corpus_documents(API_BASE_URL)
         if not corpus_list:
             st.sidebar.warning("⚠️ No se pudo cargar el catálogo del corpus desde el backend.")
-            doc_display_options = ["(Sin catálogo disponible)"]
+            doc_display_options = []
         else:
             # Formatear opciones: id - título - [Estado]
             doc_display_options = []
@@ -448,24 +470,25 @@ def main() -> None:
                 label = f"{status_icon} [{doc.get('identificador_documento')}] {doc.get('titulo')}"
                 doc_display_options.append(label)
 
-        selected_option = st.sidebar.selectbox("Documento del corpus:", doc_display_options)
+        selected_options = st.sidebar.multiselect(
+            "Documentos del corpus (Estudio Focalizado):",
+            doc_display_options,
+            help="Selecciona uno o varios documentos para delimitar el análisis pedagógico.",
+        )
 
-        if corpus_list and selected_option and "[" in selected_option:
-            raw_id = selected_option.split("[")[1].split("]")[0]
-            selected_corpus_id = raw_id
-            doc_data = next((d for d in corpus_list if d.get("identificador_documento") == raw_id), None)
-            if doc_data:
-                eval_tag = doc_data.get("resultado_evaluacion", "")
-                proc_tag = "Indexado en FAISS" if doc_data.get("esta_procesado") else "Pendiente de indexar"
-                lic_tag = doc_data.get("licencia", "")
-                st.sidebar.markdown(
-                    f"<div style='font-size: 0.75rem; color: #94a3b8; background: #11141d; padding: 8px; border-radius: 8px; margin-top: 4px;'>"
-                    f"<b>Estado:</b> {eval_tag} ({proc_tag})<br>"
-                    f"<b>Licencia:</b> {lic_tag}<br>"
-                    f"<b>Fuente:</b> {doc_data.get('fuente', '')[:45]}..."
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
+        if corpus_list and selected_options:
+            for opt in selected_options:
+                if "[" in opt:
+                    raw_id = opt.split("[")[1].split("]")[0]
+                    selected_corpus_ids.append(raw_id)
+            
+            # Mostrar detalle resumido de los documentos seleccionados
+            st.sidebar.markdown(
+                f"<div style='font-size: 0.75rem; color: #38bdf8; margin-top: 2px;'>"
+                f"📚 <b>{len(selected_corpus_ids)} documento(s) seleccionado(s)</b>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
     else:
         archivo_subido = st.sidebar.file_uploader(
             "📁 Sube tu archivo", type=["pdf", "txt", "md"]
@@ -475,6 +498,15 @@ def main() -> None:
             " • PDF, TXT, MD</p>",
             unsafe_allow_html=True,
         )
+
+    # Campo opcional para Estudio Focalizado (tema o pregunta)
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🎯 Enfoque Pedagógico")
+    tema_estudio_input = st.sidebar.text_input(
+        "Tema o pregunta de estudio (opcional):",
+        placeholder="Ej. Medidas de contingencia ante ataques...",
+        help="Introduce un tema, concepto o pregunta para enfocar la recuperación y generación.",
+    )
 
     st.sidebar.markdown("---")
     perfil_label = st.sidebar.selectbox(
@@ -513,11 +545,14 @@ def main() -> None:
                 "⚠️ Por favor, sube un documento técnico (.pdf, .txt o .md) en la barra lateral para"
                 " iniciar el procesamiento."
             )
-        elif modo_origen == "📚 Catálogo del Corpus" and not selected_corpus_id:
-            st.error("⚠️ Por favor, selecciona un documento válido del catálogo del corpus.")
+        elif modo_origen == "📚 Catálogo del Corpus" and not selected_corpus_ids:
+            st.warning(
+                "⚠️ Por favor, selecciona al menos un documento del catálogo del corpus para iniciar el estudio focalizado."
+            )
         else:
             try:
                 documento_id = None
+                documento_ids: list[str] = []
                 nombre_mostrado = ""
 
                 # CASO 1: Archivo subido por el usuario
@@ -544,30 +579,44 @@ def main() -> None:
                             mime_type=archivo_subido.type,
                         )
                     documento_id = upload_res.get("documento_id")
+                    documento_ids = [documento_id] if documento_id else []
                     chunks_indexados = upload_res.get("chunks_indexados", 0)
                     st.toast(f"✅ Ingesta completada ({chunks_indexados} fragmentos indexados)", icon="📦")
 
-                # CASO 2: Documento seleccionado del corpus oficial
+                # CASO 2: Documentos seleccionados del corpus oficial (Estudio Focalizado)
                 else:
-                    documento_id = selected_corpus_id
-                    nombre_mostrado = f"Corpus {documento_id}"
-                    with st.spinner(f"🔍 Paso 1/2: Verificando/Indexando documento '{documento_id}' en FAISS..."):
-                        ingest_res = ingest_corpus_document(API_BASE_URL, documento_id)
-                    chunks_indexados = ingest_res.get("chunks_indexados", 0)
-                    st.toast(f"✅ Documento listo en RAG ({chunks_indexados} fragmentos)", icon="📚")
+                    documento_ids = selected_corpus_ids
+                    documento_id = selected_corpus_ids[0]
+                    nombre_mostrado = f"Corpus [{', '.join(selected_corpus_ids)}]"
+                    
+                    # Asegurar ingesta en FAISS de todos los documentos seleccionados
+                    with st.spinner(f"🔍 Paso 1/2: Verificando/Indexando {len(selected_corpus_ids)} documento(s) en FAISS..."):
+                        total_chunks = 0
+                        for did in selected_corpus_ids:
+                            ingest_res = ingest_corpus_document(API_BASE_URL, did)
+                            total_chunks += ingest_res.get("chunks_indexados", 0)
+                    st.toast(f"✅ {len(selected_corpus_ids)} documento(s) listos en RAG ({total_chunks} fragmentos)", icon="📚")
 
                 # Paso 2: Orquestación RAG y Adaptación Educativa
-                with st.spinner("🧠 Paso 2/2: Orquestando pipeline RAG y generando contenido adaptado..."):
+                tema_limpio = tema_estudio_input.strip() if tema_estudio_input else None
+                spinner_msg = (
+                    f"🧠 Paso 2/2: Orquestando pipeline RAG y generando estudio focalizado en '{tema_limpio}'..."
+                    if tema_limpio
+                    else "🧠 Paso 2/2: Orquestando pipeline RAG y generando contenido adaptado..."
+                )
+                with st.spinner(spinner_msg):
                     adapt_res = request_adaptation(
                         base_url=API_BASE_URL,
                         documento_id=documento_id,
+                        documento_ids=documento_ids,
+                        tema_estudio=tema_limpio,
                         perfil=PERFIL_OPTIONS[perfil_label],
                         formato=FORMATO_OPTIONS[formato_label],
                         nicho=NICHO_OPTIONS[nicho_label],
                         nivel=NIVEL_OPTIONS[nivel_label],
                     )
 
-                st.success("🎉 ¡Documento procesado y adaptado exitosamente por el motor NuevaMente!")
+                st.success("🎉 ¡Documento(s) procesado(s) y adaptado(s) exitosamente por el motor NuevaMente!")
 
                 # --- RENDERIZADO DE RESULTADOS REALES ---
                 metadatos = adapt_res.get("metadatos", {})
@@ -647,19 +696,23 @@ def main() -> None:
 
                 with col_dl:
                     st.markdown("#### 💾 Exportar Resultado")
+                    export_name_tag = "_".join(documento_ids)[:24] if documento_ids else (documento_id[:8] if documento_id else "doc")
                     st.download_button(
                         label="📥 Descargar Paquete Educativo (JSON)",
                         data=json.dumps(adapt_res, indent=2, ensure_ascii=False),
-                        file_name=f"nuevamente_adaptacion_{documento_id[:8]}.json",
+                        file_name=f"nuevamente_adaptacion_{export_name_tag}.json",
                         mime="application/json",
                     )
 
-                # Trazabilidad RAG: Fragmentos fuente
+                # Trazabilidad RAG: Fragmentos fuente identificando documento de origen
                 if fuentes:
-                    with st.expander(f"🔍 Fragmentos fuente del documento analizado ({len(fuentes)} fragmentos)"):
+                    with st.expander(f"🔍 Fragmentos fuente analizados ({len(fuentes)} fragmentos)"):
                         for f in fuentes:
                             score_f = f.get("score_relevancia", 0.0)
-                            st.markdown(f"**Fragmento #{f.get('posicion', 0) + 1}** — Relevancia: `{score_f:.4f}`")
+                            doc_origen = f.get("documento_id") or (documento_ids[0] if documento_ids else (documento_id or "N/D"))
+                            st.markdown(
+                                f"**Fragmento #{f.get('posicion', 0) + 1}** • Doc: `{doc_origen}` — Relevancia: `{score_f:.4f}`"
+                            )
                             st.text(f.get("texto", ""))
                             st.markdown("---")
 

@@ -224,10 +224,49 @@ def test_request_adaptation_exitoso():
         assert args[0] == "http://localhost:8000/api/v1/adaptacion"
         payload = kwargs["json"]
         assert payload["documento_id"] == "doc-uuid-1234"
+        assert payload["documento_ids"] == ["doc-uuid-1234"]
         assert payload["perfil_destinatario"] == "principiante"
         assert payload["formato_salida"] == "tutorial"
         assert payload["nicho"] == "general"
         assert payload["nivel_detalle"] == "didactico"
+
+
+def test_request_adaptation_estudio_focalizado_multiple_docs_y_tema():
+    """request_adaptation debe estructurar correctamente documento_ids y tema_estudio."""
+    mock_resp = MagicMock(spec=requests.Response)
+    mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "status": "ok",
+        "document_id": "NM-001",
+        "metadatos": {"documento_id": "NM-001"},
+        "contenido_adaptado": "Contenido focalizado...",
+        "evaluacion_calidad": {"anclaje_fuente_score": 0.95},
+        "fuentes": [{"documento_id": "NM-001", "texto": "frag 1", "score_relevancia": 0.95}],
+    }
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        resultado = request_adaptation(
+            base_url="http://localhost:8000",
+            documento_ids=["NM-001", "NM-002"],
+            tema_estudio="Seguridad en bases de datos",
+            perfil="junior",
+            formato="resumen",
+            nicho="ciberseguridad",
+            nivel="tecnico",
+        )
+
+        assert resultado["status"] == "ok"
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        assert payload["documento_id"] == "NM-001"
+        assert payload["documento_ids"] == ["NM-001", "NM-002"]
+        assert payload["tema_estudio"] == "Seguridad en bases de datos"
+        assert payload["perfil_destinatario"] == "junior"
+        assert payload["formato_salida"] == "resumen"
+        assert payload["nicho"] == "ciberseguridad"
+        assert payload["nivel_detalle"] == "tecnico"
 
 
 def test_request_adaptation_error_503_servicio_no_disponible():
