@@ -88,3 +88,22 @@ class ConfigurationError(NuevaMenteError):
     Esta excepción es de inicio (startup): si se lanza, el servicio afectado
     no debería haberse iniciado correctamente.
     """
+
+
+class EmptySelectionError(NuevaMenteError):
+    """
+    Lanzada cuando la lista `documento_ids` se recibe vacía o solo contiene
+    cadenas en blanco, lo que hace imposible determinar el scope de búsqueda.
+
+    El endpoint que recibe esta excepción debe responder con HTTP 400.
+    """
+
+
+class NoRelevantSourcesError(NuevaMenteError):
+    """
+    Lanzada cuando todos los documentos seleccionados existen en el índice pero
+    la recuperación semántica no devuelve ningún chunk (p. ej. texto demasiado
+    corto, todos los chunks eliminados, o query sin similitud mínima).
+
+    El endpoint que recibe esta excepción debe responder con HTTP 404.
+    """

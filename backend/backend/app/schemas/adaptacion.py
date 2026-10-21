@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -65,14 +65,37 @@ class AdaptacionRequest(BaseModel):
     """
     Parámetros requeridos para generar contenido educativo adaptativo.
 
-    El campo `documento_id` debe corresponder a un documento previamente
-    ingestado mediante el endpoint de carga de archivos.
+    ## Selección de documentos
+
+    El sistema soporta dos modos de selección, compatibles entre sí:
+
+    - **Modo singular (legado):** se envía `documento_id` (string).  El campo se
+      trata internamente como si `documento_ids` fuera `[documento_id]`.
+    - **Modo múltiple (Estudio Focalizado):** se envía `documento_ids` (lista de
+      strings).  Permite recuperar contexto de varios documentos a la vez.
+
+    Si se envían ambos campos, `documento_ids` tiene precedencia.
+    Al menos uno de los dos campos debe estar presente y no vacío.
     """
 
-    documento_id: str = Field(
-        ...,
+    documento_id: str | None = Field(
+        default=None,
         min_length=1,
-        description="ID único del documento previamente cargado en el sistema.",
+        description=(
+            "ID único del documento previamente cargado en el sistema. "
+            "Campo legado — se convierte internamente a documento_ids=[documento_id]. "
+            "Si se proporciona documento_ids, este campo es ignorado."
+        ),
+    )
+    documento_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Lista de IDs de documentos para Estudio Focalizado. "
+            "Cada elemento debe ser un ID previamente ingestado mediante "
+            "POST /api/v1/files/upload. "
+            "Si se proporciona, tiene precedencia sobre documento_id. "
+            "La lista no puede estar vacía ni contener solo cadenas en blanco."
+        ),
     )
     perfil_destinatario: PerfilDestinatario = Field(
         ...,
@@ -91,6 +114,41 @@ class AdaptacionRequest(BaseModel):
         description="Nivel de profundidad técnica esperado en el contenido generado.",
     )
 
+    @model_validator(mode="after")
+    def _resolver_documento_ids(self) -> "AdaptacionRequest":
+        """
+        Reconcilia documento_id y documento_ids en una única lista normalizada.
+
+        Reglas (en orden de precedencia):
+          1. Si documento_ids tiene elementos no vacíos → se usa directamente.
+          2. Si solo viene documento_id → se convierte a [documento_id].
+          3. Si ninguno viene → error de validación.
+          4. Si documento_ids viene como lista vacía o con solo blancos → error.
+        """
+        ids = self.documento_ids
+        singular = self.documento_id
+
+        # Caso 1 y 4: documento_ids presente
+        if ids is not None:
+            ids_limpios = [d.strip() for d in ids if d and d.strip()]
+            if not ids_limpios:
+                raise ValueError(
+                    "documento_ids no puede estar vacío ni contener solo cadenas en blanco."
+                )
+            self.documento_ids = ids_limpios
+            return self
+
+        # Caso 2: solo documento_id
+        if singular and singular.strip():
+            self.documento_ids = [singular.strip()]
+            return self
+
+        # Caso 3: ninguno
+        raise ValueError(
+            "Debe proporcionarse al menos uno de los campos: "
+            "'documento_id' o 'documento_ids'."
+        )
+
 
 # ---------------------------------------------------------------------------
 # Sub-modelos de respuesta
@@ -101,11 +159,16 @@ class FuenteFragmento(BaseModel):
     """
     Fragmento del documento fuente utilizado para generar el contenido.
 
-    Incluye la puntuación de relevancia semántica asignada durante la
-    recuperación del índice FAISS.
+    Incluye el documento_id del fragmento para trazabilidad en modo
+    de selección múltiple, y la puntuación de relevancia semántica
+    asignada durante la recuperación del índice FAISS.
     """
 
     chunk_id: str = Field(..., description="Identificador único del fragmento (UUID).")
+    documento_id: str = Field(
+        ...,
+        description="ID del documento al que pertenece este fragmento.",
+    )
     texto: str = Field(..., description="Texto del fragmento fuente.")
     posicion: int = Field(
         ..., description="Índice del fragmento dentro del documento original (base 0)."
@@ -126,7 +189,18 @@ class Metadatos(BaseModel):
     el contenido para trazabilidad.
     """
 
-    documento_id: str = Field(..., description="ID del documento fuente utilizado.")
+    documento_id: str = Field(
+        ...,
+        description=(
+            "ID del documento fuente principal utilizado. "
+            "En modo singular coincide con el request; en modo múltiple "
+            "contiene el primer elemento de documento_ids."
+        ),
+    )
+    documento_ids: list[str] = Field(
+        ...,
+        description="Lista completa de IDs de documentos consultados para generar el contenido.",
+    )
     perfil_destinatario: PerfilDestinatario = Field(
         ..., description="Perfil del destinatario especificado en el request."
     )
@@ -232,9 +306,9 @@ class AdaptacionResponse(BaseModel):
     """
     Respuesta completa del endpoint de adaptación de contenido educativo.
 
-    Incluye el contenido generado, los fragmentos fuente utilizados,
-    la evaluación pedagógica automática y el resultado del almacenamiento
-    en OCI Object Storage.
+    Incluye el contenido generado, los fragmentos fuente utilizados (con
+    trazabilidad por documento), la evaluación pedagógica automática y el
+    resultado del almacenamiento en OCI Object Storage.
     """
 
     status: str = Field(
@@ -242,7 +316,15 @@ class AdaptacionResponse(BaseModel):
         description="Estado de la operación. Siempre 'ok' en respuestas exitosas.",
     )
     document_id: str = Field(
-        ..., description="ID del documento fuente utilizado en la generación."
+        ...,
+        description=(
+            "ID del documento fuente principal. En modo múltiple, primer elemento "
+            "de documento_ids. Mantenido por compatibilidad hacia atrás."
+        ),
+    )
+    documento_ids: list[str] = Field(
+        ...,
+        description="Lista completa de IDs de documentos consultados.",
     )
     metadatos: Metadatos = Field(
         ..., description="Metadatos de la solicitud procesada."
@@ -260,7 +342,10 @@ class AdaptacionResponse(BaseModel):
     )
     fuentes: list[FuenteFragmento] = Field(
         ...,
-        description="Lista de fragmentos del documento fuente utilizados en la generación.",
+        description=(
+            "Lista de fragmentos de los documentos fuente utilizados en la generación. "
+            "Cada fragmento incluye su documento_id para trazabilidad."
+        ),
     )
     almacenamiento_oci: AlmacenamientoOCI = Field(
         ..., description="Resultado del intento de almacenamiento en OCI Object Storage."

@@ -23,7 +23,7 @@ import unicodedata
 
 import numpy as np
 
-from app.core.exceptions import DocumentNotFoundError
+from app.core.exceptions import DocumentNotFoundError, NoRelevantSourcesError
 from app.schemas.adaptacion import (
     AdaptacionRequest,
     AdaptacionResponse,
@@ -263,56 +263,83 @@ class AgentService:
 
     def generate_content(self, request: AdaptacionRequest) -> AdaptacionResponse:
         """
-        Genera contenido educativo adaptativo a partir de un documento ingestado.
+        Genera contenido educativo adaptativo a partir de uno o varios documentos ingestados.
 
-        Orquesta el flujo completo: RAG -> prompt -> LLM -> parseo -> score -> OCI -> respuesta.
+        Soporta dos modos de operación:
+          - **Singular (legado):** ``request.documento_ids`` contiene un único ID.
+          - **Múltiple (Estudio Focalizado):** ``request.documento_ids`` contiene
+            varios IDs; los chunks de todos los documentos se fusionan y re-ordenan
+            por score antes de construir el prompt.
+
+        El validador Pydantic de :class:`AdaptacionRequest` garantiza que
+        ``documento_ids`` siempre esté normalizado antes de llegar aquí.
+
+        Flujo: RAG multi → prompt → LLM → parseo → score → OCI → respuesta.
 
         Args:
-            request: Parametros de la solicitud de adaptacion (AdaptacionRequest).
+            request: Parámetros de la solicitud de adaptación.
 
         Returns:
             AdaptacionResponse con el contenido generado y todos los metadatos.
 
         Raises:
-            DocumentNotFoundError: Si el documento_id no existe en el indice.
-            LLMNotConfiguredError: Si LLM_API_KEY esta ausente o invalida.
-            LLMGenerationError:    Si la llamada al LLM falla.
+            DocumentNotFoundError:    Si ningún documento_id existe en el índice.
+            NoRelevantSourcesError:   Si los documentos existen pero no hay chunks relevantes.
+            LLMNotConfiguredError:    Si LLM_API_KEY está ausente o inválida.
+            LLMGenerationError:       Si la llamada al LLM falla.
         """
-        # 1. Verificar que el documento existe en el indice RAG
-        if not self.rag.document_exists(request.documento_id):
-            raise DocumentNotFoundError(
-                message="El documento especificado no existe.",
-                detail=(
-                    f"No se encontro ningun chunk indexado para documento_id="
-                    f"'{request.documento_id}'. "
-                    f"Verifica que el documento fue cargado correctamente."
-                ),
-            )
+        # documento_ids está siempre normalizado por el model_validator del schema
+        doc_ids: list[str] = request.documento_ids  # type: ignore[assignment]
 
-        # 2. Construir query semantica que orienta la recuperacion de chunks
+        # 1. Construir query semántica
         query = (
             f"{request.nicho.value} {request.nivel_detalle.value} "
             f"{request.formato_salida.value}"
         )
         logger.info(
-            "generate_content: recuperando chunks para documento_id=%s, query='%s'",
-            request.documento_id,
+            "generate_content: recuperando chunks para documento_ids=%s, query='%s'",
+            doc_ids,
             query,
         )
 
-        # 3. Recuperar los chunks mas relevantes del documento
-        chunks = self.rag.retrieve(
+        # 2. Recuperar chunks de todos los documentos seleccionados
+        chunks, ids_invalidos = self.rag.retrieve_multi(
             query=query,
-            documento_id=request.documento_id,
+            documento_ids=doc_ids,
             top_k=self.rag._settings.rag_top_k,
         )
+
+        if ids_invalidos:
+            logger.warning(
+                "generate_content: %d documento(s) no encontrado(s) en el índice: %s",
+                len(ids_invalidos),
+                ids_invalidos,
+            )
+
         logger.info(
-            "generate_content: %d chunks recuperados para documento_id=%s",
+            "generate_content: %d chunks recuperados de %d documento(s)",
             len(chunks),
-            request.documento_id,
+            len(doc_ids) - len(ids_invalidos),
         )
 
-        # 4. Construir los prompts adaptados al perfil, formato, nicho y nivel
+        # 3. Verificar que hay chunks para trabajar
+        if not chunks:
+            ids_validos_str = ", ".join(
+                f"'{d}'" for d in doc_ids if d not in ids_invalidos
+            )
+            raise NoRelevantSourcesError(
+                message="No se encontraron fragmentos relevantes en los documentos seleccionados.",
+                detail=(
+                    f"Los documentos {ids_validos_str} están indexados pero no "
+                    "retornaron chunks para la consulta actual. "
+                    "Verifica que el contenido de los documentos sea suficientemente extenso."
+                ),
+            )
+
+        # 4. ID principal para campos de compatibilidad hacia atrás
+        doc_id_principal = doc_ids[0]
+
+        # 5. Construir prompts adaptados
         system_prompt, user_prompt = self._build_prompt(
             chunks=chunks,
             perfil=request.perfil_destinatario.value,
@@ -321,10 +348,7 @@ class AgentService:
             nivel=request.nivel_detalle.value,
         )
 
-        # 5. Invocar el LLM (puede lanzar LLMNotConfiguredError o LLMGenerationError)
-        # Selección determinista del método de generación:
-        # Se prefiere generate_with_telemetry si está implementado a nivel de clase o explícitamente en el mock.
-        # Nunca se atrapa TypeError interno para evitar dobles llamadas accidentales.
+        # 6. Invocar el LLM
         telemetria = None
         tiene_telemetria = (
             hasattr(type(self.llm), "generate_with_telemetry")
@@ -346,18 +370,16 @@ class AgentService:
             contenido_raw = self.llm.generate(user_prompt, system_prompt)
 
         logger.info(
-            "generate_content: contenido generado (%d caracteres) para documento_id=%s",
+            "generate_content: contenido generado (%d caracteres) para documento_ids=%s",
             len(contenido_raw),
-            request.documento_id,
+            doc_ids,
         )
 
-        # 6. Intentar parsear el contenido como JSON para formatos estructurados
+        # 7. Parsear contenido JSON para formatos estructurados
         contenido_adaptado = _parsear_contenido(contenido_raw, request.formato_salida.value)
 
-        # 7. Calcular el score de anclaje a las fuentes
+        # 8. Calcular score de anclaje
         score = self._calculate_anclaje_score(contenido_raw, chunks)
-
-        # 8. Calcular el nivel de confianza cualitativo
         nivel_conf = self._nivel_confianza(score)
         logger.info(
             "generate_content: anclaje_fuente_score=%.4f, nivel_confianza='%s'",
@@ -365,28 +387,30 @@ class AgentService:
             nivel_conf,
         )
 
-        # 9. Subir el artefacto a OCI (con degradacion elegante ante fallos)
+        # 9. Subir artefacto a OCI (degradación elegante)
         artefacto = {
-            "documento_id": request.documento_id,
+            "documento_ids": doc_ids,
+            "documento_id": doc_id_principal,
             "contenido": contenido_raw,
         }
-        oci_result = self.oci.upload_artifact(artefacto, request.documento_id)
+        oci_result = self.oci.upload_artifact(artefacto, doc_id_principal)
         logger.info(
-            "generate_content: OCI upload status='%s' para documento_id=%s",
+            "generate_content: OCI upload status='%s'",
             oci_result.status,
-            request.documento_id,
         )
 
-        # 9b. Metadatos educativos (QA-007)
+        # 10. Metadatos educativos
         tiempo_estudio = _estimar_tiempo_estudio(contenido_raw, request.formato_salida.value)
         conceptos = _extraer_conceptos_clave(contenido_raw, chunks)
 
-        # 10. Construir y retornar la respuesta completa
+        # 11. Construir respuesta
         return AdaptacionResponse(
             status="ok",
-            document_id=request.documento_id,
+            document_id=doc_id_principal,
+            documento_ids=doc_ids,
             metadatos=Metadatos(
-                documento_id=request.documento_id,
+                documento_id=doc_id_principal,
+                documento_ids=doc_ids,
                 perfil_destinatario=request.perfil_destinatario,
                 formato_salida=request.formato_salida,
                 nicho=request.nicho,
@@ -407,6 +431,7 @@ class AgentService:
             fuentes=[
                 FuenteFragmento(
                     chunk_id=c.chunk_id,
+                    documento_id=c.documento_id,
                     texto=c.texto,
                     posicion=c.posicion,
                     score_relevancia=min(1.0, max(0.0, c.score)),

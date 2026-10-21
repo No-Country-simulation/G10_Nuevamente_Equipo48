@@ -38,7 +38,7 @@ CHUNKS = [
 CONTENIDO = "Paso 1: Identificar el riesgo.\nPaso 2: Aplicar cifrado en pagos.\n"
 
 CAMPOS_OBLIGATORIOS = [
-    "status", "document_id", "metadatos", "contenido_adaptado",
+    "status", "document_id", "documento_ids", "metadatos", "contenido_adaptado",
     "evaluacion_calidad", "fuentes", "almacenamiento_oci",
 ]
 
@@ -52,6 +52,7 @@ def _rag(existe=True):
     m = MagicMock()
     m.document_exists.return_value = existe
     m.retrieve.return_value = CHUNKS
+    m.retrieve_multi.return_value = (CHUNKS, [])
     m._settings = MagicMock()
     m._settings.rag_top_k = 5
     m.generate_embeddings.return_value = _emb()

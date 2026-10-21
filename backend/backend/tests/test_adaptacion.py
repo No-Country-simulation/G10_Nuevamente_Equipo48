@@ -71,6 +71,7 @@ REQUEST_VALIDO = {
 CAMPOS_OBLIGATORIOS_RESPONSE = [
     "status",
     "document_id",
+    "documento_ids",
     "metadatos",
     "contenido_adaptado",
     "evaluacion_calidad",
@@ -98,6 +99,16 @@ def mock_rag():
     mock = MagicMock()
     mock.document_exists.return_value = True
     mock.retrieve.return_value = CHUNKS_PRUEBA
+    def _retrieve_multi(query, documento_ids, top_k):
+        validos = [d for d in documento_ids if mock.document_exists(d)]
+        invalidos = [d for d in documento_ids if not mock.document_exists(d)]
+        if not validos:
+            raise DocumentNotFoundError(
+                message="Ninguno de los documentos especificados existe en el índice.",
+                detail=f"Los siguientes documento_ids no fueron encontrados: {', '.join(documento_ids)}",
+            )
+        return CHUNKS_PRUEBA[:top_k], invalidos
+    mock.retrieve_multi.side_effect = _retrieve_multi
     mock._settings = MagicMock()
     mock._settings.rag_top_k = 5
     # Embeddings normalizados L2 de dimensión 384 para el cálculo del anclaje
@@ -468,6 +479,7 @@ class TestAdaptacionPropiedades:
         mock_rag = MagicMock()
         mock_rag.document_exists.return_value = True
         mock_rag.retrieve.return_value = CHUNKS_PRUEBA
+        mock_rag.retrieve_multi.return_value = (CHUNKS_PRUEBA, [])
         mock_rag._settings = MagicMock()
         mock_rag._settings.rag_top_k = 5
         emb = np.ones((1, 384), dtype=np.float32)
@@ -522,6 +534,7 @@ class TestAdaptacionPropiedades:
         mock_rag = MagicMock()
         mock_rag.document_exists.return_value = True
         mock_rag.retrieve.return_value = CHUNKS_PRUEBA
+        mock_rag.retrieve_multi.return_value = (CHUNKS_PRUEBA, [])
         mock_rag._settings = MagicMock()
         mock_rag._settings.rag_top_k = 5
         emb = np.ones((1, 384), dtype=np.float32)
@@ -578,6 +591,7 @@ class TestAdaptacionPropiedades:
         mock_rag = MagicMock()
         mock_rag.document_exists.return_value = True
         mock_rag.retrieve.return_value = CHUNKS_PRUEBA
+        mock_rag.retrieve_multi.return_value = (CHUNKS_PRUEBA, [])
         mock_rag._settings = MagicMock()
         mock_rag._settings.rag_top_k = 5
         emb = np.ones((1, 384), dtype=np.float32)

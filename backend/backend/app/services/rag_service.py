@@ -489,3 +489,87 @@ class RAGService:
             )
             for score, idx in seleccionados
         ]
+
+    # ------------------------------------------------------------------
+    # retrieve_multi: recuperación semántica sobre múltiples documentos
+    # ------------------------------------------------------------------
+
+    def retrieve_multi(
+        self,
+        query: str,
+        documento_ids: list[str],
+        top_k: int,
+    ) -> tuple[list[ChunkMetadata], list[str]]:
+        """
+        Recupera los chunks más relevantes de una lista de documentos.
+
+        Estrategia:
+          1. Separar los IDs en existentes vs. inexistentes en el índice.
+          2. Para cada documento existente llamar a :meth:`retrieve` con
+             ``top_k`` chunks y acumular los resultados.
+          3. Ordenar todos los chunks acumulados por score descendente y
+             devolver los ``top_k`` globales más relevantes.
+          4. Retornar también la lista de IDs inválidos para que el llamador
+             pueda decidir si loguear o rechazar la petición.
+
+        Args:
+            query:         Texto de la consulta semántica.
+            documento_ids: Lista de IDs de documentos donde buscar.
+            top_k:         Número máximo de chunks a retornar en total.
+
+        Returns:
+            Tupla ``(chunks, ids_invalidos)`` donde:
+              - ``chunks``       — lista de :class:`ChunkMetadata` ordenada por
+                                  score descendente (máximo ``top_k`` elementos).
+              - ``ids_invalidos``— lista de IDs que no existen en el índice.
+
+        Raises:
+            DocumentNotFoundError: Si **ninguno** de los IDs existe en el índice
+                                   (todos son inválidos o la lista está vacía).
+        """
+        if not documento_ids:
+            from app.core.exceptions import DocumentNotFoundError  # noqa: PLC0415
+            raise DocumentNotFoundError(
+                message="La lista de documentos está vacía.",
+                detail="documento_ids debe contener al menos un identificador.",
+            )
+
+        ids_validos: list[str] = []
+        ids_invalidos: list[str] = []
+
+        for doc_id in documento_ids:
+            if self.document_exists(doc_id):
+                ids_validos.append(doc_id)
+            else:
+                ids_invalidos.append(doc_id)
+                logger.warning(
+                    "retrieve_multi: documento_id='%s' no encontrado en el índice.",
+                    doc_id,
+                )
+
+        if not ids_validos:
+            from app.core.exceptions import DocumentNotFoundError  # noqa: PLC0415
+            ids_str = ", ".join(f"'{i}'" for i in documento_ids)
+            raise DocumentNotFoundError(
+                message="Ninguno de los documentos especificados existe en el índice.",
+                detail=(
+                    f"Los siguientes documento_ids no fueron encontrados: {ids_str}. "
+                    "Verifica que los documentos fueron cargados correctamente."
+                ),
+            )
+
+        todos_los_chunks: list[ChunkMetadata] = []
+        for doc_id in ids_validos:
+            try:
+                chunks = self.retrieve(query=query, documento_id=doc_id, top_k=top_k)
+                todos_los_chunks.extend(chunks)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "retrieve_multi: error recuperando chunks para documento_id='%s': %s",
+                    doc_id,
+                    exc,
+                )
+
+        # Ordenar globalmente por score descendente y limitar a top_k
+        todos_los_chunks.sort(key=lambda c: c.score, reverse=True)
+        return todos_los_chunks[:top_k], ids_invalidos
