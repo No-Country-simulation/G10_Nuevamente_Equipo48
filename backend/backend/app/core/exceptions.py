@@ -107,3 +107,13 @@ class NoRelevantSourcesError(NuevaMenteError):
 
     El endpoint que recibe esta excepción debe responder con HTTP 404.
     """
+
+
+class RAGTechnicalError(NuevaMenteError):
+    """
+    Lanzada cuando ocurre un fallo técnico durante el procesamiento de embeddings
+    o la búsqueda en el índice vectorial FAISS.
+
+    El endpoint que recibe esta excepción debe responder con HTTP 500.
+    """
+

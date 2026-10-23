@@ -559,16 +559,30 @@ class RAGService:
             )
 
         todos_los_chunks: list[ChunkMetadata] = []
+        fallos_tecnicos: list[str] = []
+
         for doc_id in ids_validos:
             try:
                 chunks = self.retrieve(query=query, documento_id=doc_id, top_k=top_k)
                 todos_los_chunks.extend(chunks)
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "retrieve_multi: error recuperando chunks para documento_id='%s': %s",
+                logger.error(
+                    "retrieve_multi: fallo técnico recuperando chunks para documento_id='%s': %s",
                     doc_id,
                     exc,
                 )
+                fallos_tecnicos.append(f"{doc_id}: {type(exc).__name__}")
+
+        # Si todos los documentos válidos fallaron por excepciones técnicas
+        if ids_validos and len(fallos_tecnicos) == len(ids_validos) and not todos_los_chunks:
+            from app.core.exceptions import RAGTechnicalError  # noqa: PLC0415
+            raise RAGTechnicalError(
+                message="Error técnico en el servicio de recuperación semántica.",
+                detail=(
+                    f"No fue posible procesar la consulta en los documentos válidos "
+                    f"debido a errores técnicos ({', '.join(fallos_tecnicos)})."
+                ),
+            )
 
         # Ordenar globalmente por score descendente y limitar a top_k
         todos_los_chunks.sort(key=lambda c: c.score, reverse=True)

@@ -113,27 +113,36 @@ class AdaptacionRequest(BaseModel):
         ...,
         description="Nivel de profundidad técnica esperado en el contenido generado.",
     )
+    tema_o_pregunta: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Tema específico o pregunta orientadora que guía el estudio focalizado.",
+    )
 
     @model_validator(mode="after")
     def _resolver_documento_ids(self) -> "AdaptacionRequest":
         """
-        Reconcilia documento_id y documento_ids en una única lista normalizada.
-
-        Reglas (en orden de precedencia):
-          1. Si documento_ids tiene elementos no vacíos → se usa directamente.
-          2. Si solo viene documento_id → se convierte a [documento_id].
-          3. Si ninguno viene → error de validación.
-          4. Si documento_ids viene como lista vacía o con solo blancos → error.
+        Reconcilia documento_id y documento_ids en una única lista normalizada,
+        valida la restricción de 1 a 3 documentos y limpia el campo tema_o_pregunta.
         """
         ids = self.documento_ids
         singular = self.documento_id
 
-        # Caso 1 y 4: documento_ids presente
+        # Limpiar tema_o_pregunta si viene con espacios
+        if self.tema_o_pregunta is not None:
+            t_clean = self.tema_o_pregunta.strip()
+            self.tema_o_pregunta = t_clean if t_clean else None
+
+        # Caso 1: documento_ids presente
         if ids is not None:
             ids_limpios = [d.strip() for d in ids if d and d.strip()]
             if not ids_limpios:
                 raise ValueError(
                     "documento_ids no puede estar vacío ni contener solo cadenas en blanco."
+                )
+            if len(ids_limpios) > 3:
+                raise ValueError(
+                    "El Estudio Focalizado permite seleccionar entre 1 y 3 documentos como máximo."
                 )
             self.documento_ids = ids_limpios
             return self
@@ -166,7 +175,7 @@ class FuenteFragmento(BaseModel):
 
     chunk_id: str = Field(..., description="Identificador único del fragmento (UUID).")
     documento_id: str = Field(
-        ...,
+        default="",
         description="ID del documento al que pertenece este fragmento.",
     )
     texto: str = Field(..., description="Texto del fragmento fuente.")
@@ -198,8 +207,12 @@ class Metadatos(BaseModel):
         ),
     )
     documento_ids: list[str] = Field(
-        ...,
+        default_factory=list,
         description="Lista completa de IDs de documentos consultados para generar el contenido.",
+    )
+    tema_o_pregunta: str | None = Field(
+        default=None,
+        description="Tema o pregunta orientadora que guió la recuperación y generación.",
     )
     perfil_destinatario: PerfilDestinatario = Field(
         ..., description="Perfil del destinatario especificado en el request."
@@ -239,6 +252,14 @@ class Metadatos(BaseModel):
         default=None,
         description="Latencia total en segundos de la llamada al modelo LLM.",
     )
+
+    @model_validator(mode="after")
+    def _reconciliar_documentos(self) -> "Metadatos":
+        if not self.documento_ids and self.documento_id:
+            self.documento_ids = [self.documento_id]
+        elif self.documento_ids and not self.documento_id:
+            self.documento_id = self.documento_ids[0]
+        return self
 
 
 class EvaluacionCalidad(BaseModel):
@@ -323,9 +344,17 @@ class AdaptacionResponse(BaseModel):
         ),
     )
     documento_ids: list[str] = Field(
-        ...,
+        default_factory=list,
         description="Lista completa de IDs de documentos consultados.",
     )
+
+    @model_validator(mode="after")
+    def _reconciliar_documentos_resp(self) -> "AdaptacionResponse":
+        if not self.documento_ids and self.document_id:
+            self.documento_ids = [self.document_id]
+        elif self.documento_ids and not self.document_id:
+            self.document_id = self.documento_ids[0]
+        return self
     metadatos: Metadatos = Field(
         ..., description="Metadatos de la solicitud procesada."
     )

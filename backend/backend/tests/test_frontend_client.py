@@ -351,3 +351,52 @@ def test_ingest_corpus_document_exitoso():
         assert res["chunks_indexados"] == 15
         mock_post.assert_called_once_with("http://localhost:8000/api/v1/files/corpus/NM-006/ingest", timeout=30)
 
+
+def test_request_adaptation_con_documento_ids_y_tema_orientador():
+    """request_adaptation debe enviar documento_ids y tema_o_pregunta para Estudio Focalizado."""
+    mock_resp = MagicMock(spec=requests.Response)
+    mock_resp.ok = True
+    mock_resp.json.return_value = {
+        "status": "ok",
+        "metadatos": {"tiempo_estimado_estudio_minutos": 15},
+        "evaluacion_calidad": {"anclaje_fuente_score": 0.92},
+        "fuentes": [],
+    }
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        resultado = request_adaptation(
+            base_url="http://localhost:8000",
+            documento_ids=["NM-004", "NM-006"],
+            perfil="profesional",
+            formato="resumen",
+            nicho="fintech",
+            nivel="tecnico",
+            tema_o_pregunta="Modelado relacional y seguridad aplicada",
+        )
+
+        assert resultado["status"] == "ok"
+        mock_post.assert_called_once()
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        assert payload["documento_ids"] == ["NM-004", "NM-006"]
+        assert "documento_id" not in payload
+        assert payload["tema_o_pregunta"] == "Modelado relacional y seguridad aplicada"
+        assert payload["perfil_destinatario"] == "profesional"
+
+
+def test_request_adaptation_ignora_tema_vacio():
+    """request_adaptation no debe incluir tema_o_pregunta si solo contiene espacios."""
+    mock_resp = MagicMock(spec=requests.Response)
+    mock_resp.ok = True
+    mock_resp.json.return_value = {"status": "ok"}
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        request_adaptation(
+            base_url="http://localhost:8000",
+            documento_ids=["NM-004"],
+            tema_o_pregunta="   ",
+        )
+        _, kwargs = mock_post.call_args
+        assert "tema_o_pregunta" not in kwargs["json"]
+
+

@@ -132,16 +132,18 @@ class AgentService:
         formato: str,
         nicho: str,
         nivel: str,
+        tema_o_pregunta: str | None = None,
     ) -> tuple[str, str]:
         """
-        Construye el system_prompt y el user_prompt adaptados al perfil y formato.
+        Construye el system_prompt y el user_prompt adaptados al perfil, formato y tema/pregunta.
 
         Args:
-            chunks:  Lista de fragmentos del documento fuente recuperados por RAG.
-            perfil:  Perfil del destinatario (valor string del enum PerfilDestinatario).
-            formato: Formato de salida (valor string del enum FormatoSalida).
-            nicho:   Sector de negocio (valor string del enum Nicho).
-            nivel:   Nivel de detalle (valor string del enum NivelDetalle).
+            chunks:          Lista de fragmentos del documento fuente recuperados por RAG.
+            perfil:          Perfil del destinatario (valor string del enum PerfilDestinatario).
+            formato:         Formato de salida (valor string del enum FormatoSalida).
+            nicho:           Sector de negocio (valor string del enum Nicho).
+            nivel:           Nivel de detalle (valor string del enum NivelDetalle).
+            tema_o_pregunta: Tema o pregunta orientadora ingresada por el usuario (opcional).
 
         Returns:
             Tupla (system_prompt, user_prompt) listos para enviar al LLM.
@@ -155,11 +157,19 @@ class AgentService:
             "Estructura el contenido de manera clara y organizada.",
         )
 
+        seccion_tema = ""
+        if tema_o_pregunta and tema_o_pregunta.strip():
+            seccion_tema = (
+                f"\n\nTEMA O PREGUNTA ORIENTADORA DEL ESTUDIO:\n"
+                f"El contenido debe enfocarse y responder específicamente a: '{tema_o_pregunta.strip()}'.\n"
+                f"Aborda este tema o pregunta con prioridad pedagógica, manteniendo siempre la fundamentación documental."
+            )
+
         system_prompt = (
             f"Eres un experto en diseno instruccional y comunicacion tecnica especializado "
             f"en el sector {nicho}.\n"
             f"Tu tarea es generar contenido educativo en formato '{formato}' adaptado a un "
-            f"destinatario con perfil '{perfil}' con nivel de detalle '{nivel}'.\n\n"
+            f"destinatario con perfil '{perfil}' con nivel de detalle '{nivel}'.{seccion_tema}\n\n"
             f"Instrucciones de adaptacion para perfil {perfil}:\n"
             f"{instruccion_perfil}\n\n"
             f"Instrucciones de formato para {formato}:\n"
@@ -175,13 +185,19 @@ class AgentService:
             f"[Fragmento {i + 1}]\n{c.texto}" for i, c in enumerate(chunks)
         )
 
+        instruccion_usuario = "Genera el contenido educativo solicitado basandote exclusivamente en los fragmentos anteriores."
+        if tema_o_pregunta and tema_o_pregunta.strip():
+            instruccion_usuario = (
+                f"Tema o pregunta orientadora: '{tema_o_pregunta.strip()}'.\n"
+                f"Genera el contenido educativo enfocado en este tema/pregunta basándote exclusivamente en los fragmentos anteriores."
+            )
+
         user_prompt = (
             "Fragmentos del documento fuente:\n"
             "---\n"
             f"{chunks_concatenados}\n"
             "---\n\n"
-            "Genera el contenido educativo solicitado basandote exclusivamente en los "
-            "fragmentos anteriores."
+            f"{instruccion_usuario}"
         )
 
         return system_prompt, user_prompt
@@ -291,11 +307,18 @@ class AgentService:
         # documento_ids está siempre normalizado por el model_validator del schema
         doc_ids: list[str] = request.documento_ids  # type: ignore[assignment]
 
-        # 1. Construir query semántica
-        query = (
-            f"{request.nicho.value} {request.nivel_detalle.value} "
-            f"{request.formato_salida.value}"
-        )
+        # 1. Construir query semántica orientada por tema o parámetros
+        tema_clean = (request.tema_o_pregunta or "").strip()
+        if tema_clean:
+            query = (
+                f"{tema_clean} {request.nicho.value} {request.nivel_detalle.value} "
+                f"{request.formato_salida.value}"
+            )
+        else:
+            query = (
+                f"{request.nicho.value} {request.nivel_detalle.value} "
+                f"{request.formato_salida.value}"
+            )
         logger.info(
             "generate_content: recuperando chunks para documento_ids=%s, query='%s'",
             doc_ids,
@@ -303,11 +326,26 @@ class AgentService:
         )
 
         # 2. Recuperar chunks de todos los documentos seleccionados
-        chunks, ids_invalidos = self.rag.retrieve_multi(
-            query=query,
-            documento_ids=doc_ids,
-            top_k=self.rag._settings.rag_top_k,
-        )
+        rag_top_k = getattr(getattr(self.rag, "_settings", None), "rag_top_k", 5)
+        if hasattr(self.rag, "retrieve_multi") and callable(getattr(self.rag, "retrieve_multi")):
+            res_multi = self.rag.retrieve_multi(
+                query=query,
+                documento_ids=doc_ids,
+                top_k=rag_top_k,
+            )
+            if isinstance(res_multi, tuple) and len(res_multi) == 2:
+                chunks, ids_invalidos = res_multi
+            elif isinstance(res_multi, list):
+                chunks, ids_invalidos = res_multi, []
+            else:
+                chunks, ids_invalidos = [], []
+        else:
+            chunks = self.rag.retrieve(
+                query=query,
+                documento_id=doc_ids[0],
+                top_k=rag_top_k,
+            )
+            ids_invalidos = []
 
         if ids_invalidos:
             logger.warning(
@@ -346,6 +384,7 @@ class AgentService:
             formato=request.formato_salida.value,
             nicho=request.nicho.value,
             nivel=request.nivel_detalle.value,
+            tema_o_pregunta=request.tema_o_pregunta,
         )
 
         # 6. Invocar el LLM
@@ -391,6 +430,7 @@ class AgentService:
         artefacto = {
             "documento_ids": doc_ids,
             "documento_id": doc_id_principal,
+            "tema_o_pregunta": request.tema_o_pregunta,
             "contenido": contenido_raw,
         }
         oci_result = self.oci.upload_artifact(artefacto, doc_id_principal)
@@ -411,6 +451,7 @@ class AgentService:
             metadatos=Metadatos(
                 documento_id=doc_id_principal,
                 documento_ids=doc_ids,
+                tema_o_pregunta=request.tema_o_pregunta,
                 perfil_destinatario=request.perfil_destinatario,
                 formato_salida=request.formato_salida,
                 nicho=request.nicho,

@@ -12,6 +12,7 @@ from app.core.exceptions import (
     LLMGenerationError,
     LLMNotConfiguredError,
     NoRelevantSourcesError,
+    RAGTechnicalError,
 )
 from app.schemas.adaptacion import AdaptacionRequest, AdaptacionResponse
 from app.services.agent_service import AgentService
@@ -51,6 +52,7 @@ async def generar_contenido(
         400: documento_ids vacío o con solo cadenas en blanco (EmptySelectionError).
         404: Ningún documento_id existe en el índice (DocumentNotFoundError), o
              los documentos existen pero no hay chunks relevantes (NoRelevantSourcesError).
+        500: Fallo técnico en el servicio RAG (RAGTechnicalError).
         503: Servicio LLM no configurado (LLMNotConfiguredError).
         502: Error durante la generación con el LLM (LLMGenerationError).
     """
@@ -80,6 +82,12 @@ async def generar_contenido(
     except NoRelevantSourcesError as exc:
         raise HTTPException(
             status_code=404,
+            detail={"error": exc.message, "detalle": exc.detail},
+        ) from exc
+
+    except RAGTechnicalError as exc:
+        raise HTTPException(
+            status_code=500,
             detail={"error": exc.message, "detalle": exc.detail},
         ) from exc
 
