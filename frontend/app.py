@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import requests
 
 try:
@@ -310,6 +311,24 @@ def request_adaptation(
     return response.json()
 
 
+def guardar_resultado_local(adapt_res: dict, doc_ids: list[str]) -> str | None:
+    """
+    Guarda persistentemente el producto educativo generado en el disco local
+    (output/adaptaciones/resultado_{id}_{timestamp}.json).
+    """
+    try:
+        import datetime
+        out_dir = Path("output/adaptaciones")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        prefix = doc_ids[0] if doc_ids else "resultado"
+        out_path = out_dir / f"resultado_{prefix}_{ts}.json"
+        out_path.write_text(json.dumps(adapt_res, indent=2, ensure_ascii=False), encoding="utf-8")
+        return str(out_path)
+    except Exception:
+        return None
+
+
 # --- INTERFAZ STREAMLIT ---
 
 def main() -> None:
@@ -534,8 +553,22 @@ def main() -> None:
         help="Elige si quieres trabajar con documentos ya indexados o subir uno nuevo.",
     )
 
+    # Botón para limpiar y empezar un nuevo estudio si ya hay un resultado activo
+    if st.session_state.get("ultimo_resultado") is not None:
+        if st.sidebar.button("🔄 Nuevo Estudio / Limpiar"):
+            st.session_state["ultimo_resultado"] = None
+            st.session_state["ultimos_doc_ids"] = []
+            st.session_state["ultimo_tema"] = None
+            st.session_state["ultimos_apartados"] = []
+            st.session_state["ultima_ruta_local"] = None
+            st.rerun()
+
     selected_corpus_ids: list[str] = []
     archivo_subido = None
+    apartados_map: dict[str, dict] = {}
+    apartados_seleccionados: list[str] = []
+    titulos_apartados: list[str] = []
+    tema_input: str = ""
 
     if modo_origen == "📚 Catálogo del Corpus":
         corpus_docs = fetch_corpus_documents(API_BASE_URL)
@@ -558,7 +591,7 @@ def main() -> None:
             else:
                 docs_filtrados = corpus_docs
 
-            # 2. Mostrar el catálogo documental existente
+            # 2. Mostrar el catálogo documental existente con indicación de disponibilidad
             corpus_options = {}
             for i, doc in enumerate(docs_filtrados):
                 doc_id = (
@@ -568,8 +601,15 @@ def main() -> None:
                     or f"doc_{i}"
                 )
                 doc_title = doc.get("titulo") or doc.get("nombre") or f"Documento {doc_id}"
-                eval_status = doc.get("resultado_evaluacion")
-                status_tag = f" [{eval_status}]" if eval_status and eval_status != "APTO" else ""
+                eval_status = doc.get("resultado_evaluacion", "APTO")
+                archivo_disp = doc.get("archivo_disponible", True)
+
+                if not archivo_disp:
+                    status_tag = " ⚠️ [Sin archivo]"
+                elif eval_status != "APTO":
+                    status_tag = f" ⛔ [{eval_status}]"
+                else:
+                    status_tag = " ✅"
                 corpus_options[doc_id] = f"{doc_id} — {doc_title}{status_tag}"
 
             # 3. Seleccionar entre uno y tres documentos
@@ -620,7 +660,25 @@ def main() -> None:
                 if apartados_seleccionados
                 else []
             )
-            tema_input = " | ".join(titulos_apartados) if titulos_apartados else ""
+
+            # 5. Pregunta o tema orientador opcional para guiar la consulta RAG combinada
+            st.sidebar.markdown(
+                "<p style='font-size: 0.8rem; color: #94a3b8; margin-top: 10px; margin-bottom: 2px;'>"
+                "🎯 <b>Pregunta o tema orientador</b> <i>(opcional)</i></p>",
+                unsafe_allow_html=True,
+            )
+            pregunta_corpus = st.sidebar.text_area(
+                label="tema_corpus_hidden",
+                label_visibility="collapsed",
+                placeholder="Ej: Explica cómo funcionan las relaciones entre tablas / Compara bases de datos y archivos.",
+                max_chars=500,
+                help="Pregunta o enfoque específico que guiará la recuperación y adaptación pedagógica.",
+                key="pregunta_corpus_input",
+            )
+            if pregunta_corpus and pregunta_corpus.strip():
+                tema_input = pregunta_corpus.strip()
+            else:
+                tema_input = " | ".join(titulos_apartados) if titulos_apartados else ""
         else:
             apartados_map = {}
             apartados_seleccionados = []
@@ -703,6 +761,23 @@ def main() -> None:
             if len(selected_corpus_ids) > 3:
                 st.error("⚠️ Puedes seleccionar un máximo de 3 documentos del corpus.")
                 st.stop()
+
+            # Validar que los documentos seleccionados tengan archivo físico disponible en el servidor local
+            docs_sin_archivo = [
+                d_id
+                for d_id in selected_corpus_ids
+                if any(
+                    (d.get("identificador_documento") == d_id or d.get("documento_id") == d_id)
+                    and not d.get("archivo_disponible", True)
+                    for d in corpus_docs
+                )
+            ]
+            if docs_sin_archivo:
+                st.error(
+                    f"⚠️ El documento `{', '.join(docs_sin_archivo)}` figura en el inventario pero su archivo físico no está disponible en el servidor local. "
+                    "Por favor selecciona documentos con archivo disponible (marcados con ✅ en el catálogo)."
+                )
+                st.stop()
             if not apartados_map:
                 st.error(
                     "⚠️ Los documentos seleccionados no contienen apartados recuperables. "
@@ -779,8 +854,6 @@ def main() -> None:
                 documento_id = upload_res.get("documento_id")
                 chunks_indexados = upload_res.get("chunks_indexados", 0)
                 doc_ids_usados = [documento_id] if documento_id else []
-                st.toast(f"✅ Ingesta completada ({chunks_indexados} fragmentos indexados)", icon="📦")
-
                 with st.spinner("🧠 Paso 2/2: Orquestando pipeline RAG y generando contenido adaptado..."):
                     adapt_res = request_adaptation(
                         base_url=API_BASE_URL,
@@ -792,24 +865,61 @@ def main() -> None:
                         tema_o_pregunta=tema_limpio,
                     )
 
-            st.success("🎉 ¡Documento procesado y adaptado exitosamente por el motor NuevaMente!")
+            # Guardar persistencia local en disco y en estado de sesión
+            ruta_local = guardar_resultado_local(adapt_res, doc_ids_usados)
+            st.session_state["ultimo_resultado"] = adapt_res
+            st.session_state["ultimos_doc_ids"] = doc_ids_usados
+            st.session_state["ultimo_tema"] = tema_limpio
+            st.session_state["ultimos_apartados"] = titulos_apartados
+            st.session_state["ultimo_formato_label"] = formato_label
+            st.session_state["ultimo_perfil_label"] = perfil_label
+            st.session_state["ultima_ruta_local"] = ruta_local
 
-            # --- RENDERIZADO DE RESULTADOS REALES ---
-            metadatos = adapt_res.get("metadatos", {})
-            evaluacion = adapt_res.get("evaluacion_calidad", {})
-            contenido = adapt_res.get("contenido_adaptado")
-            fuentes = adapt_res.get("fuentes", [])
-            oci_info = adapt_res.get("almacenamiento_oci", {})
-            es_multidoc = len(doc_ids_usados) > 1
+        except requests.exceptions.ConnectionError:
+            st.error(
+                f"🔌 **Error de conexión:** No fue posible conectar con el backend en `{API_BASE_URL}`. "
+                "Verifica que el servidor FastAPI esté iniciado en esa dirección y puerto."
+            )
+        except requests.exceptions.Timeout:
+            st.error(
+                "⏱️ **Tiempo de espera agotado:** La solicitud excedió el tiempo límite configurado. "
+                "Intenta con un fragmento más corto o verifica la carga del servidor."
+            )
+        except requests.exceptions.HTTPError as exc:
+            st.error(f"⚠️ **Error HTTP devuelto por el servidor:** {exc}")
+        except Exception as exc:
+            st.error(f"❌ **Error inesperado durante la ejecución:** {type(exc).__name__}: {exc}")
+
+    # ── RENDERIZADO DE RESULTADOS (PERSISTENTE EN SESIÓN) ─────────────────────
+    resultado_activo = st.session_state.get("ultimo_resultado")
+
+    if resultado_activo:
+        metadatos = resultado_activo.get("metadatos", {})
+        evaluacion = resultado_activo.get("evaluacion_calidad", {})
+        contenido = resultado_activo.get("contenido_adaptado")
+        fuentes = resultado_activo.get("fuentes", [])
+        oci_info = resultado_activo.get("almacenamiento_oci", {})
+        doc_ids_usados = st.session_state.get("ultimos_doc_ids", [])
+        tema_usado = st.session_state.get("ultimo_tema")
+        apartados_usados = st.session_state.get("ultimos_apartados", [])
+        formato_label_activo = st.session_state.get("ultimo_formato_label", "Contenido Adaptado")
+        perfil_label_activo = st.session_state.get("ultimo_perfil_label", "Principiante")
+        ruta_guardada = st.session_state.get("ultima_ruta_local")
+        es_multidoc = len(doc_ids_usados) > 1
+
+        if not contenido:
+            st.warning("⚠️ El motor procesó la solicitud pero no se obtuvo contenido adaptado para mostrar.")
+        else:
+            st.success("🎉 ¡Documento procesado y adaptado exitosamente por el motor NuevaMente!")
 
             st.markdown("### 📊 Métricas Pedagógicas y Evaluación")
 
             # Badge de tema orientador (si se ingresó)
-            if tema_limpio:
+            if tema_usado:
                 st.markdown(
                     f"<div style='background: rgba(56,189,248,0.12); border-left: 3px solid #38bdf8; "
                     f"padding: 8px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 0.9rem;'>"
-                    f"🎯 <b>Tema orientador:</b> {tema_limpio}</div>",
+                    f"🎯 <b>Tema orientador:</b> {tema_usado}</div>",
                     unsafe_allow_html=True,
                 )
 
@@ -824,7 +934,7 @@ def main() -> None:
                 )
 
             # Badge de apartados seleccionados
-            apartados_estudiados = metadatos.get("apartados", []) or titulos_apartados
+            apartados_estudiados = metadatos.get("apartados") or apartados_usados or []
             if apartados_estudiados:
                 ap_badges = " · ".join(f"`{a}`" for a in apartados_estudiados)
                 st.markdown(
@@ -836,7 +946,7 @@ def main() -> None:
 
             c1, c2, c3, c4 = st.columns(4)
             with c1:
-                st.metric("Perfil Aplicado", metadatos.get("perfil_destinatario", perfil_label))
+                st.metric("Perfil Aplicado", metadatos.get("perfil_destinatario", perfil_label_activo))
             with c2:
                 tiempo_estudio = metadatos.get("tiempo_estimado_estudio_minutos", 10)
                 st.metric("Tiempo Estimado", f"{tiempo_estudio} min")
@@ -854,7 +964,7 @@ def main() -> None:
                 st.markdown(f"**🏷️ Conceptos Clave:** {tags}")
 
             st.markdown("<hr style='border-color: rgba(56, 189, 248, 0.2); margin: 20px 0;'>", unsafe_allow_html=True)
-            st.markdown(f"### 📚 Contenido Adaptado — {formato_label}")
+            st.markdown(f"### 📚 Contenido Adaptado — {formato_label_activo}")
 
             # Visualización adaptable según el tipo de dato devuelto
             if isinstance(contenido, list):
@@ -871,7 +981,12 @@ def main() -> None:
                             for k, v in item.items():
                                 if k not in ("pregunta", "frente", "titulo"):
                                     label = k.replace("_", " ").capitalize()
-                                    st.markdown(f"**{label}:** {v}")
+                                    if isinstance(v, list):
+                                        st.markdown(f"**{label}:**")
+                                        for sub_item in v:
+                                            st.markdown(f"  - {sub_item}")
+                                    else:
+                                        st.markdown(f"**{label}:** {v}")
                     else:
                         st.markdown(f"- {item}")
             elif isinstance(contenido, dict):
@@ -887,28 +1002,30 @@ def main() -> None:
                     unsafe_allow_html=True,
                 )
 
-            # Persistencia OCI y Descarga
+            # Persistencia OCI, Guardado Local y Descarga
             st.markdown("<hr style='border-color: rgba(56, 189, 248, 0.2); margin: 20px 0;'>", unsafe_allow_html=True)
             col_oci, col_dl = st.columns(2)
-            # Nombre de archivo para descarga (usa primer doc_id si existe)
             _dl_prefix = doc_ids_usados[0][:8] if doc_ids_usados else "resultado"
             with col_oci:
-                st.markdown("#### ☁️ Persistencia OCI")
+                st.markdown("#### ☁️ Persistencia del Producto")
                 status_oci = oci_info.get("status_upload", "no_configurado")
                 if status_oci in ("exitoso", "completado"):
-                    st.success(f"Estado: **{status_oci}**")
+                    st.success(f"Nube OCI: **{status_oci}**")
                     if oci_info.get("url_objeto"):
                         st.caption(f"URL: {oci_info.get('url_objeto')}")
                 elif status_oci == "no_configurado":
-                    st.info("Estado: **no_configurado** (modo degradado local activo)")
+                    st.info("Nube OCI: **modo degradado local activo**")
                 else:
-                    st.warning(f"Estado: **{status_oci}** ({oci_info.get('detalle', 'Sin detalle')})")
+                    st.warning(f"Nube OCI: **{status_oci}** ({oci_info.get('detalle', 'Sin detalle')})")
+
+                if ruta_guardada:
+                    st.success(f"💾 Guardado localmente en: `{ruta_guardada}`")
 
             with col_dl:
                 st.markdown("#### 💾 Exportar Resultado")
                 st.download_button(
                     label="📥 Descargar Paquete Educativo (JSON)",
-                    data=json.dumps(adapt_res, indent=2, ensure_ascii=False),
+                    data=json.dumps(resultado_activo, indent=2, ensure_ascii=False),
                     file_name=f"nuevamente_adaptacion_{_dl_prefix}.json",
                     mime="application/json",
                 )
@@ -933,22 +1050,7 @@ def main() -> None:
 
             # Inspección técnica de JSON
             with st.expander("🛠️ Ver respuesta JSON bruta de la API"):
-                st.json(adapt_res)
-
-        except requests.exceptions.ConnectionError:
-            st.error(
-                f"🔌 **Error de conexión:** No fue posible conectar con el backend en `{API_BASE_URL}`. "
-                "Verifica que el servidor FastAPI esté iniciado en esa dirección y puerto."
-            )
-        except requests.exceptions.Timeout:
-            st.error(
-                "⏱️ **Tiempo de espera agotado:** La solicitud excedió el tiempo límite configurado. "
-                "Intenta con un fragmento más corto o verifica la carga del servidor."
-            )
-        except requests.exceptions.HTTPError as exc:
-            st.error(f"⚠️ **Error HTTP devuelto por el servidor:** {exc}")
-        except Exception as exc:
-            st.error(f"❌ **Error inesperado durante la ejecución:** {type(exc).__name__}: {exc}")
+                st.json(resultado_activo)
 
     else:
         st.markdown(

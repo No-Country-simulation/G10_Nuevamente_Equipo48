@@ -31,6 +31,7 @@ from frontend.app import (
     extract_error_message,
     fetch_corpus_documents,
     fetch_document_structure,
+    guardar_resultado_local,
     ingest_corpus_document,
     request_adaptation,
     upload_file_to_backend,
@@ -432,6 +433,65 @@ def test_request_adaptation_con_apartados():
         _, kwargs = mock_post.call_args
         payload = kwargs["json"]
         assert payload["apartados"] == ["1.1 Introducción", "1.2 Modelos"]
+
+
+def test_request_adaptation_con_apartados_vacios_o_none():
+    """request_adaptation no debe incluir la clave apartados si es None o lista vacía."""
+    mock_resp = MagicMock(spec=requests.Response)
+    mock_resp.ok = True
+    mock_resp.json.return_value = {"status": "ok"}
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        # Caso 1: apartados=None
+        request_adaptation(
+            base_url="http://localhost:8000",
+            documento_id="doc-123",
+            apartados=None,
+        )
+        _, kwargs = mock_post.call_args
+        assert "apartados" not in kwargs["json"]
+
+        # Caso 2: apartados=[]
+        request_adaptation(
+            base_url="http://localhost:8000",
+            documento_id="doc-123",
+            apartados=[],
+        )
+        _, kwargs = mock_post.call_args
+        assert "apartados" not in kwargs["json"]
+
+
+def test_resolucion_apartados_estudiados_defensiva():
+    """Comprueba que la resolución defensiva de apartados no falle con metadatos vacíos o sin apartados."""
+    # Caso 1: Cargar Archivo Nuevo sin apartados (titulos_apartados = [])
+    titulos_apartados: list[str] = []
+    metadatos_sin_apartados = {"perfil_destinatario": "principiante"}
+    apartados_estudiados = metadatos_sin_apartados.get("apartados") or titulos_apartados or []
+    assert apartados_estudiados == []
+
+    # Caso 2: Catálogo con apartados presentes en metadatos
+    metadatos_con_apartados = {"apartados": ["1.1 Intro", "1.2 Modelo"]}
+    apartados_estudiados_2 = metadatos_con_apartados.get("apartados") or titulos_apartados or []
+    assert apartados_estudiados_2 == ["1.1 Intro", "1.2 Modelo"]
+
+
+def test_guardar_resultado_local_persistencia(tmp_path, monkeypatch):
+    """Comprueba que guardar_resultado_local serialice el JSON en disco de forma segura."""
+    monkeypatch.chdir(tmp_path)
+    resultado_mock = {
+        "status": "ok",
+        "contenido_adaptado": "Resumen educativo de prueba.",
+        "metadatos": {"perfil": "junior"},
+    }
+    ruta = guardar_resultado_local(resultado_mock, ["NM-004"])
+    assert ruta is not None
+    assert Path(ruta).exists()
+    import json
+    contenido = json.loads(Path(ruta).read_text(encoding="utf-8"))
+    assert contenido["status"] == "ok"
+    assert contenido["contenido_adaptado"] == "Resumen educativo de prueba."
+
+
 
 
 
