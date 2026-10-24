@@ -653,3 +653,100 @@ class TestApartadosEstudioFocalizado:
         assert isinstance(data["apartados"], list)
         assert len(data["apartados"]) > 0
 
+    def test_query_rag_combina_tema_y_apartados(self):
+        """La consulta RAG combina tanto tema_o_pregunta como los apartados cuando ambos están presentes."""
+        mock_rag = MagicMock()
+        mock_rag.document_exists.return_value = True
+        mock_rag.retrieve_multi.return_value = (
+            [
+                ChunkMetadata(chunk_id="c1", documento_id="doc-1", texto="Texto de BD.", posicion=0, score=0.92),
+                ChunkMetadata(chunk_id="c2", documento_id="doc-2", texto="Texto de Seguridad.", posicion=0, score=0.88),
+            ],
+            [],
+        )
+        mock_rag.generate_embeddings.return_value = np.array([[0.92]], dtype=np.float32)
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = "Contenido adaptado combinado."
+        mock_oci = MagicMock()
+        mock_oci.upload_artifact.return_value = OCIUploadResult(status="ok")
+
+        svc = AgentService(rag=mock_rag, llm=mock_llm, oci=mock_oci)
+        req = AdaptacionRequest(
+            documento_ids=["doc-1", "doc-2"],
+            tema_o_pregunta="¿Cómo asegurar el almacenamiento relacional?",
+            apartados=["1.4 Concepto de BD", "Medidas de Seguridad"],
+            **{k: v for k, v in REQUEST_BASE.items()},
+        )
+        resp = svc.generate_content(req)
+
+        # 1. Query RAG debe incluir TANTO la pregunta como los apartados
+        call_query = mock_rag.retrieve_multi.call_args[1]["query"]
+        assert "¿Cómo asegurar el almacenamiento relacional?" in call_query
+        assert "1.4 Concepto de BD" in call_query
+        assert "Medidas de Seguridad" in call_query
+
+        # 2. La consulta debe respetar los documentos seleccionados
+        call_doc_ids = mock_rag.retrieve_multi.call_args[1]["documento_ids"]
+        assert call_doc_ids == ["doc-1", "doc-2"]
+
+        # 3. Prompt al LLM debe incluir ambos
+        user_prompt_sent = mock_llm.generate.call_args[0][0]
+        system_prompt_sent = mock_llm.generate.call_args[0][1]
+        assert "¿Cómo asegurar el almacenamiento relacional?" in user_prompt_sent or "¿Cómo asegurar el almacenamiento relacional?" in system_prompt_sent
+        assert "1.4 Concepto de BD" in user_prompt_sent or "1.4 Concepto de BD" in system_prompt_sent
+
+        # 4. Atribución de fuentes intacta
+        assert len(resp.fuentes) == 2
+        assert resp.fuentes[0].documento_id == "doc-1"
+        assert resp.fuentes[1].documento_id == "doc-2"
+        assert resp.fuentes[0].score_relevancia == 0.92
+
+    def test_query_rag_solo_con_tema_sin_apartados(self):
+        """Si solo hay tema_o_pregunta, la query RAG lo incluye y omite apartados."""
+        mock_rag = MagicMock()
+        mock_rag.document_exists.return_value = True
+        mock_rag.retrieve_multi.return_value = (
+            [ChunkMetadata(chunk_id="c1", documento_id="doc-1", texto="Texto.", posicion=0, score=0.9)],
+            [],
+        )
+        mock_rag.generate_embeddings.return_value = np.array([[0.9]], dtype=np.float32)
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = "Contenido."
+
+        svc = AgentService(rag=mock_rag, llm=mock_llm, oci=MagicMock(upload_artifact=MagicMock(return_value=OCIUploadResult(status="ok"))))
+        req = AdaptacionRequest(
+            documento_ids=["doc-1"],
+            tema_o_pregunta="Pregunta específica de estudio",
+            apartados=[],
+            **{k: v for k, v in REQUEST_BASE.items()},
+        )
+        svc.generate_content(req)
+        call_query = mock_rag.retrieve_multi.call_args[1]["query"]
+        assert "Pregunta específica de estudio" in call_query
+
+    def test_query_rag_sin_tema_ni_apartados_usa_solo_enums(self):
+        """Si no hay ni tema ni apartados, la query RAG se genera con los enums."""
+        mock_rag = MagicMock()
+        mock_rag.document_exists.return_value = True
+        mock_rag.retrieve_multi.return_value = (
+            [ChunkMetadata(chunk_id="c1", documento_id="doc-1", texto="Texto.", posicion=0, score=0.9)],
+            [],
+        )
+        mock_rag.generate_embeddings.return_value = np.array([[0.9]], dtype=np.float32)
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = "Contenido."
+
+        svc = AgentService(rag=mock_rag, llm=mock_llm, oci=MagicMock(upload_artifact=MagicMock(return_value=OCIUploadResult(status="ok"))))
+        req = AdaptacionRequest(
+            documento_ids=["doc-1"],
+            tema_o_pregunta=None,
+            apartados=None,
+            **{k: v for k, v in REQUEST_BASE.items()},
+        )
+        svc.generate_content(req)
+        call_query = mock_rag.retrieve_multi.call_args[1]["query"]
+        assert req.nicho.value in call_query
+        assert req.nivel_detalle.value in call_query
+        assert req.formato_salida.value in call_query
+
