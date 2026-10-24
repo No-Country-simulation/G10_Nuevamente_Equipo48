@@ -284,3 +284,66 @@ async def ingestar_documento_corpus(documento_id: str, request: Request):
         "chunks_indexados": chunks_count,
         "mensaje": f"Documento '{documento_id}' indexado exitosamente en FAISS ({chunks_count} fragmentos).",
     }
+
+
+@router.get("/corpus/{documento_id}/structure", tags=["Documentos"])
+async def obtener_estructura_documento_corpus(documento_id: str, request: Request):
+    """
+    Extrae y retorna los apartados, títulos y subtítulos del documento del corpus.
+    """
+    from app.services.corpus_loader import find_corpus_root, get_corpus_status
+    document_service = getattr(request.app.state, "document_service", None)
+    if document_service is None:
+        document_service = DocumentService()
+
+    status_list = get_corpus_status()
+    doc_meta = next((d for d in status_list if d["identificador_documento"] == documento_id), None)
+    if not doc_meta:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": f"Documento '{documento_id}' no encontrado en el catálogo del corpus.",
+                "detalle": "Verifique el identificador con el inventario de Data Analytics.",
+            },
+        )
+
+    corpus_root = find_corpus_root()
+    if not corpus_root or not corpus_root.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "Directorio de almacenamiento físico del corpus no encontrado.",
+                "detalle": "No es posible localizar los archivos del corpus en el entorno local.",
+            },
+        )
+
+    matches = list(corpus_root.glob(f"{documento_id}*/*.*"))
+    file_matches = [m for m in matches if m.is_file() and not m.name.startswith(".")]
+    if not file_matches:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": f"Archivo físico no encontrado para el documento '{documento_id}'.",
+                "detalle": "El documento está registrado en el inventario pero el archivo local no está presente.",
+            },
+        )
+
+    target_file = file_matches[0]
+    ext = target_file.suffix.lower()
+    mime_map = {
+        ".pdf": "application/pdf",
+        ".md": "text/markdown",
+        ".txt": "text/plain",
+    }
+    mime_type = mime_map.get(ext, "application/pdf")
+    file_bytes = target_file.read_bytes()
+    apartados = document_service.extract_structure(file_bytes, mime_type)
+
+    return {
+        "status": "ok",
+        "documento_id": documento_id,
+        "titulo": doc_meta.get("titulo", ""),
+        "total_apartados": len(apartados),
+        "apartados": apartados,
+    }
+

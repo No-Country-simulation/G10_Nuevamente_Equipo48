@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -65,14 +65,37 @@ class AdaptacionRequest(BaseModel):
     """
     Parámetros requeridos para generar contenido educativo adaptativo.
 
-    El campo `documento_id` debe corresponder a un documento previamente
-    ingestado mediante el endpoint de carga de archivos.
+    ## Selección de documentos
+
+    El sistema soporta dos modos de selección, compatibles entre sí:
+
+    - **Modo singular (legado):** se envía `documento_id` (string).  El campo se
+      trata internamente como si `documento_ids` fuera `[documento_id]`.
+    - **Modo múltiple (Estudio Focalizado):** se envía `documento_ids` (lista de
+      strings).  Permite recuperar contexto de varios documentos a la vez.
+
+    Si se envían ambos campos, `documento_ids` tiene precedencia.
+    Al menos uno de los dos campos debe estar presente y no vacío.
     """
 
-    documento_id: str = Field(
-        ...,
+    documento_id: str | None = Field(
+        default=None,
         min_length=1,
-        description="ID único del documento previamente cargado en el sistema.",
+        description=(
+            "ID único del documento previamente cargado en el sistema. "
+            "Campo legado — se convierte internamente a documento_ids=[documento_id]. "
+            "Si se proporciona documento_ids, este campo es ignorado."
+        ),
+    )
+    documento_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "Lista de IDs de documentos para Estudio Focalizado. "
+            "Cada elemento debe ser un ID previamente ingestado mediante "
+            "POST /api/v1/files/upload. "
+            "Si se proporciona, tiene precedencia sobre documento_id. "
+            "La lista no puede estar vacía ni contener solo cadenas en blanco."
+        ),
     )
     perfil_destinatario: PerfilDestinatario = Field(
         ...,
@@ -90,6 +113,59 @@ class AdaptacionRequest(BaseModel):
         ...,
         description="Nivel de profundidad técnica esperado en el contenido generado.",
     )
+    tema_o_pregunta: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Tema específico o pregunta orientadora que guía el estudio focalizado.",
+    )
+    apartados: list[str] | None = Field(
+        default=None,
+        description="Lista de apartados, títulos o subtítulos seleccionados para enfocar el estudio.",
+    )
+
+    @model_validator(mode="after")
+    def _resolver_documento_ids(self) -> "AdaptacionRequest":
+        """
+        Reconcilia documento_id y documento_ids en una única lista normalizada,
+        valida la restricción de 1 a 3 documentos y limpia el campo tema_o_pregunta y apartados.
+        """
+        ids = self.documento_ids
+        singular = self.documento_id
+
+        # Limpiar tema_o_pregunta si viene con espacios
+        if self.tema_o_pregunta is not None:
+            t_clean = self.tema_o_pregunta.strip()
+            self.tema_o_pregunta = t_clean if t_clean else None
+
+        # Limpiar apartados si viene lista
+        if self.apartados is not None:
+            ap_limpios = [a.strip() for a in self.apartados if a and a.strip()]
+            self.apartados = ap_limpios if ap_limpios else None
+
+        # Caso 1: documento_ids presente
+        if ids is not None:
+            ids_limpios = [d.strip() for d in ids if d and d.strip()]
+            if not ids_limpios:
+                raise ValueError(
+                    "documento_ids no puede estar vacío ni contener solo cadenas en blanco."
+                )
+            if len(ids_limpios) > 3:
+                raise ValueError(
+                    "El Estudio Focalizado permite seleccionar entre 1 y 3 documentos como máximo."
+                )
+            self.documento_ids = ids_limpios
+            return self
+
+        # Caso 2: solo documento_id
+        if singular and singular.strip():
+            self.documento_ids = [singular.strip()]
+            return self
+
+        # Caso 3: ninguno
+        raise ValueError(
+            "Debe proporcionarse al menos uno de los campos: "
+            "'documento_id' o 'documento_ids'."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -101,11 +177,16 @@ class FuenteFragmento(BaseModel):
     """
     Fragmento del documento fuente utilizado para generar el contenido.
 
-    Incluye la puntuación de relevancia semántica asignada durante la
-    recuperación del índice FAISS.
+    Incluye el documento_id del fragmento para trazabilidad en modo
+    de selección múltiple, y la puntuación de relevancia semántica
+    asignada durante la recuperación del índice FAISS.
     """
 
     chunk_id: str = Field(..., description="Identificador único del fragmento (UUID).")
+    documento_id: str = Field(
+        default="",
+        description="ID del documento al que pertenece este fragmento.",
+    )
     texto: str = Field(..., description="Texto del fragmento fuente.")
     posicion: int = Field(
         ..., description="Índice del fragmento dentro del documento original (base 0)."
@@ -126,7 +207,26 @@ class Metadatos(BaseModel):
     el contenido para trazabilidad.
     """
 
-    documento_id: str = Field(..., description="ID del documento fuente utilizado.")
+    documento_id: str = Field(
+        ...,
+        description=(
+            "ID del documento fuente principal utilizado. "
+            "En modo singular coincide con el request; en modo múltiple "
+            "contiene el primer elemento de documento_ids."
+        ),
+    )
+    documento_ids: list[str] = Field(
+        default_factory=list,
+        description="Lista completa de IDs de documentos consultados para generar el contenido.",
+    )
+    tema_o_pregunta: str | None = Field(
+        default=None,
+        description="Tema o pregunta orientadora que guió la recuperación y generación.",
+    )
+    apartados: list[str] = Field(
+        default_factory=list,
+        description="Lista de apartados seleccionados que guiaron el contenido.",
+    )
     perfil_destinatario: PerfilDestinatario = Field(
         ..., description="Perfil del destinatario especificado en el request."
     )
@@ -165,6 +265,14 @@ class Metadatos(BaseModel):
         default=None,
         description="Latencia total en segundos de la llamada al modelo LLM.",
     )
+
+    @model_validator(mode="after")
+    def _reconciliar_documentos(self) -> "Metadatos":
+        if not self.documento_ids and self.documento_id:
+            self.documento_ids = [self.documento_id]
+        elif self.documento_ids and not self.documento_id:
+            self.documento_id = self.documento_ids[0]
+        return self
 
 
 class EvaluacionCalidad(BaseModel):
@@ -232,9 +340,9 @@ class AdaptacionResponse(BaseModel):
     """
     Respuesta completa del endpoint de adaptación de contenido educativo.
 
-    Incluye el contenido generado, los fragmentos fuente utilizados,
-    la evaluación pedagógica automática y el resultado del almacenamiento
-    en OCI Object Storage.
+    Incluye el contenido generado, los fragmentos fuente utilizados (con
+    trazabilidad por documento), la evaluación pedagógica automática y el
+    resultado del almacenamiento en OCI Object Storage.
     """
 
     status: str = Field(
@@ -242,8 +350,24 @@ class AdaptacionResponse(BaseModel):
         description="Estado de la operación. Siempre 'ok' en respuestas exitosas.",
     )
     document_id: str = Field(
-        ..., description="ID del documento fuente utilizado en la generación."
+        ...,
+        description=(
+            "ID del documento fuente principal. En modo múltiple, primer elemento "
+            "de documento_ids. Mantenido por compatibilidad hacia atrás."
+        ),
     )
+    documento_ids: list[str] = Field(
+        default_factory=list,
+        description="Lista completa de IDs de documentos consultados.",
+    )
+
+    @model_validator(mode="after")
+    def _reconciliar_documentos_resp(self) -> "AdaptacionResponse":
+        if not self.documento_ids and self.document_id:
+            self.documento_ids = [self.document_id]
+        elif self.documento_ids and not self.document_id:
+            self.document_id = self.documento_ids[0]
+        return self
     metadatos: Metadatos = Field(
         ..., description="Metadatos de la solicitud procesada."
     )
@@ -260,7 +384,10 @@ class AdaptacionResponse(BaseModel):
     )
     fuentes: list[FuenteFragmento] = Field(
         ...,
-        description="Lista de fragmentos del documento fuente utilizados en la generación.",
+        description=(
+            "Lista de fragmentos de los documentos fuente utilizados en la generación. "
+            "Cada fragmento incluye su documento_id para trazabilidad."
+        ),
     )
     almacenamiento_oci: AlmacenamientoOCI = Field(
         ..., description="Resultado del intento de almacenamiento en OCI Object Storage."
