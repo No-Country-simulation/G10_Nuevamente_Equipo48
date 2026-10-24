@@ -15,12 +15,61 @@ TIMEOUT_UPLOAD_SECONDS = 60
 TIMEOUT_ADAPTACION_SECONDS = 360
 
 # Mapeos de opciones visuales a los contratos y Enums exactos de FastAPI
-PERFIL_OPTIONS = {
-    "Principiante / Transición": "principiante",
-    "Desarrollador Junior": "junior",
-    "Líder Técnico / Arquitecto": "lider_tecnico",
-    "Público General / Ejecutivo": "ejecutivo",
+class _PerfilOptionsDict(dict):
+    _LEGACY_ALIASES = {
+        "Principiante / Transición": "Principiante / Básico",
+        "Desarrollador Junior": "Intermedio / Junior",
+        "Líder Técnico / Arquitecto": "Avanzado / Especialista",
+        "Público General / Ejecutivo": "Público General / Directivo",
+    }
+
+    def __getitem__(self, key):
+        if key not in self and key in self._LEGACY_ALIASES:
+            return self[self._LEGACY_ALIASES[key]]
+        return super().__getitem__(key)
+
+
+PERFIL_OPTIONS = _PerfilOptionsDict({
+    "Principiante / Básico": "principiante",
+    "Intermedio / Junior": "junior",
+    "Avanzado / Especialista": "lider_tecnico",
+    "Público General / Directivo": "ejecutivo",
+})
+
+CAMPO_OPTIONS = [
+    "🌐 Todos los campos",
+    "💻 Desarrollo de Software y Datos",
+    "🛡️ Infraestructura, Redes y Seguridad",
+    "⚙️ Ingeniería y Tecnologías Aplicadas",
+    "🔬 Ciencias Básicas y Energía",
+]
+
+DOMINIO_A_CAMPO = {
+    # 💻 Desarrollo de Software y Datos
+    "Bases de datos": "💻 Desarrollo de Software y Datos",
+    "Programación": "💻 Desarrollo de Software y Datos",
+    "Estructuras de datos / sistemas": "💻 Desarrollo de Software y Datos",
+    "Gráficos por computador": "💻 Desarrollo de Software y Datos",
+    "Cloud / Desarrollo móvil": "💻 Desarrollo de Software y Datos",
+    # 🛡️ Infraestructura, Redes y Seguridad
+    "Redes": "🛡️ Infraestructura, Redes y Seguridad",
+    "Ciberseguridad": "🛡️ Infraestructura, Redes y Seguridad",
+    "Tecnología / sistemas": "🛡️ Infraestructura, Redes y Seguridad",
+    "Rendimiento / sistemas": "🛡️ Infraestructura, Redes y Seguridad",
+    # ⚙️ Ingeniería y Tecnologías Aplicadas
+    "Electrónica": "⚙️ Ingeniería y Tecnologías Aplicadas",
+    "Ingeniería / confiabilidad": "⚙️ Ingeniería y Tecnologías Aplicadas",
+    "Ingeniería industrial": "⚙️ Ingeniería y Tecnologías Aplicadas",
+    "GIS / Geoespacial": "⚙️ Ingeniería y Tecnologías Aplicadas",
+    "IoT / Microcontroladores": "⚙️ Ingeniería y Tecnologías Aplicadas",
+    "Robótica": "⚙️ Ingeniería y Tecnologías Aplicadas",
+    # 🔬 Ciencias Básicas y Energía
+    "Energía / Física aplicada": "🔬 Ciencias Básicas y Energía",
+    "Energía renovable": "🔬 Ciencias Básicas y Energía",
+    "Química": "🔬 Ciencias Básicas y Energía",
+    "Física": "🔬 Ciencias Básicas y Energía",
 }
+
 
 FORMATO_OPTIONS = {
     "Tutorial Paso a Paso": "tutorial",
@@ -446,22 +495,20 @@ def main() -> None:
     if modo_origen == "📚 Catálogo del Corpus":
         corpus_docs = fetch_corpus_documents(API_BASE_URL)
         if corpus_docs:
-            # 1. Seleccionar el área educativa
-            areas_disponibles = sorted(
-                list({doc.get("dominio") for doc in corpus_docs if doc.get("dominio")})
-            )
-            area_opciones = ["🌐 Todas las áreas"] + areas_disponibles
-            area_educativa = st.sidebar.selectbox(
-                "🎯 1. Área Educativa:",
-                options=area_opciones,
+            # 1. Seleccionar el campo de aplicación
+            campo_aplicacion = st.sidebar.selectbox(
+                "🎯 1. Campo de aplicación:",
+                options=CAMPO_OPTIONS,
                 index=0,
-                help="Filtra el catálogo documental según el área temática de interés.",
+                help="Filtra el catálogo documental según el campo de aplicación de interés.",
             )
 
-            # Filtrar documentos por área educativa seleccionada
-            if area_educativa != "🌐 Todas las áreas":
+            # Filtrar documentos por campo de aplicación seleccionado
+            if campo_aplicacion != "🌐 Todos los campos":
                 docs_filtrados = [
-                    d for d in corpus_docs if d.get("dominio") == area_educativa
+                    d
+                    for d in corpus_docs
+                    if DOMINIO_A_CAMPO.get(d.get("dominio")) == campo_aplicacion
                 ]
             else:
                 docs_filtrados = corpus_docs
@@ -499,45 +546,15 @@ def main() -> None:
                     if t_val and t_val not in temas_derivados:
                         temas_derivados.append(t_val)
 
-            # 5. Elegir el tema orientador
-            if selected_corpus_ids and temas_derivados:
-                st.sidebar.markdown(
-                    "<p style='font-size: 0.8rem; color: #38bdf8; margin-top: 10px; margin-bottom: 2px;'>"
-                    "💡 <b>3. Temas derivados de los documentos:</b></p>",
-                    unsafe_allow_html=True,
+            # 5. Elegir el tema orientador (extraído de los documentos seleccionados)
+            tema_input = (
+                st.sidebar.selectbox(
+                    "💡 3. Tema disponible:",
+                    options=temas_derivados,
+                    help="Tema orientador extraído de los documentos seleccionados.",
                 )
-                opciones_tema = ["-- Usar tema derivado sugerido --"] + temas_derivados + [
-                    "✍️ Escribir tema personalizado"
-                ]
-                tema_seleccionado = st.sidebar.selectbox(
-                    "Tema orientador:",
-                    options=opciones_tema,
-                    index=1 if len(temas_derivados) > 0 else 0,
-                    help="Elige un tema extraído del contenido o redacta tu propio enfoque.",
-                )
-                if tema_seleccionado == "✍️ Escribir tema personalizado":
-                    tema_input = st.sidebar.text_area(
-                        label="tema_custom_input",
-                        label_visibility="collapsed",
-                        placeholder="Ej: Explica cómo opera el modelo relacional frente a NoSQL.",
-                        max_chars=500,
-                    )
-                elif tema_seleccionado != "-- Usar tema derivado sugerido --":
-                    tema_input = tema_seleccionado
-                else:
-                    tema_input = ""
-            else:
-                st.sidebar.markdown(
-                    "<p style='font-size: 0.8rem; color: #94a3b8; margin-top: 12px; margin-bottom: 2px;'>"
-                    "📝 <b>3. Tema o pregunta orientadora</b> <i>(opcional)</i></p>",
-                    unsafe_allow_html=True,
-                )
-                tema_input = st.sidebar.text_area(
-                    label="tema_o_pregunta_hidden",
-                    label_visibility="collapsed",
-                    placeholder="Ej: Fundamentos, conceptos clave o pregunta orientadora...",
-                    max_chars=500,
-                )
+                or ""
+            )
         else:
             st.sidebar.info(
                 "ℹ️ No se encontraron documentos en el catálogo del corpus. "
@@ -581,11 +598,6 @@ def main() -> None:
     formato_label = st.sidebar.selectbox(
         "Formato de salida:",
         list(FORMATO_OPTIONS.keys()),
-    )
-
-    nicho_label = st.sidebar.selectbox(
-        "Nicho o sector:",
-        list(NICHO_OPTIONS.keys()),
     )
 
     nivel_label = st.sidebar.selectbox(
@@ -669,7 +681,7 @@ def main() -> None:
                         documento_ids=doc_ids_usados,
                         perfil=PERFIL_OPTIONS[perfil_label],
                         formato=FORMATO_OPTIONS[formato_label],
-                        nicho=NICHO_OPTIONS[nicho_label],
+                        nicho="general",
                         nivel=NIVEL_OPTIONS[nivel_label],
                         tema_o_pregunta=tema_limpio,
                     )
@@ -694,7 +706,7 @@ def main() -> None:
                         documento_id=documento_id,
                         perfil=PERFIL_OPTIONS[perfil_label],
                         formato=FORMATO_OPTIONS[formato_label],
-                        nicho=NICHO_OPTIONS[nicho_label],
+                        nicho="general",
                         nivel=NIVEL_OPTIONS[nivel_label],
                         tema_o_pregunta=tema_limpio,
                     )
