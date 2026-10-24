@@ -161,21 +161,26 @@ class AgentService:
 
         seccion_tema = ""
         apartados_limpios = [a.strip() for a in (apartados or []) if a and a.strip()]
+        tema_clean = (tema_o_pregunta or "").strip()
+
+        partes_contexto = []
+        if tema_clean:
+            partes_contexto.append(
+                f"TEMA O PREGUNTA ORIENTADORA DEL ESTUDIO:\n"
+                f"El contenido debe enfocarse y responder específicamente a: '{tema_clean}'.\n"
+                f"Aborda este tema o pregunta con prioridad pedagógica, manteniendo siempre la fundamentación documental."
+            )
         if apartados_limpios:
             apartados_str = "\n".join(f"- {a}" for a in apartados_limpios)
-            seccion_tema = (
-                f"\n\nAPARTADOS Y SECCIONES SELECCIONADOS DEL DOCUMENTO:\n"
+            partes_contexto.append(
+                f"APARTADOS Y SECCIONES SELECCIONADOS DEL DOCUMENTO:\n"
                 f"El contenido educativo debe enfocarse y desarrollarse con prioridad sobre los siguientes apartados:\n"
                 f"{apartados_str}\n"
                 f"Aborda estos apartados y sus conceptos específicos con máxima prioridad pedagógica, "
                 f"manteniendo siempre la fundamentación documental estricta en las fuentes correspondientes."
             )
-        elif tema_o_pregunta and tema_o_pregunta.strip():
-            seccion_tema = (
-                f"\n\nTEMA O PREGUNTA ORIENTADORA DEL ESTUDIO:\n"
-                f"El contenido debe enfocarse y responder específicamente a: '{tema_o_pregunta.strip()}'.\n"
-                f"Aborda este tema o pregunta con prioridad pedagógica, manteniendo siempre la fundamentación documental."
-            )
+        if partes_contexto:
+            seccion_tema = "\n\n" + "\n\n".join(partes_contexto)
 
         system_prompt = (
             f"Eres un experto en diseno instruccional y comunicacion tecnica especializado "
@@ -198,15 +203,22 @@ class AgentService:
         )
 
         instruccion_usuario = "Genera el contenido educativo solicitado basandote exclusivamente en los fragmentos anteriores."
-        if apartados_limpios:
+        if apartados_limpios and tema_clean:
+            apartados_inline = ", ".join(f"'{a}'" for a in apartados_limpios)
+            instruccion_usuario = (
+                f"Tema o pregunta orientadora: '{tema_clean}'.\n"
+                f"Apartados seleccionados para el estudio: {apartados_inline}.\n"
+                f"Genera el contenido educativo respondiendo a este tema y enfocado en estos apartados basándote en los fragmentos anteriores."
+            )
+        elif apartados_limpios:
             apartados_inline = ", ".join(f"'{a}'" for a in apartados_limpios)
             instruccion_usuario = (
                 f"Apartados seleccionados para el estudio: {apartados_inline}.\n"
                 f"Genera el contenido educativo enfocado estrictamente en estos apartados basándote en los fragmentos anteriores."
             )
-        elif tema_o_pregunta and tema_o_pregunta.strip():
+        elif tema_clean:
             instruccion_usuario = (
-                f"Tema o pregunta orientadora: '{tema_o_pregunta.strip()}'.\n"
+                f"Tema o pregunta orientadora: '{tema_clean}'.\n"
                 f"Genera el contenido educativo enfocado en este tema/pregunta basándote exclusivamente en los fragmentos anteriores."
             )
 
@@ -328,22 +340,17 @@ class AgentService:
         # 1. Construir query semántica orientada por apartados, tema o parámetros
         tema_clean = (request.tema_o_pregunta or "").strip()
         apartados_limpios = [a.strip() for a in (request.apartados or []) if a and a.strip()]
+        partes_query: list[str] = []
+        if tema_clean:
+            partes_query.append(tema_clean)
         if apartados_limpios:
-            foco_apartados = " ".join(apartados_limpios[:5])
-            query = (
-                f"{foco_apartados} {request.nicho.value} {request.nivel_detalle.value} "
-                f"{request.formato_salida.value}"
-            )
-        elif tema_clean:
-            query = (
-                f"{tema_clean} {request.nicho.value} {request.nivel_detalle.value} "
-                f"{request.formato_salida.value}"
-            )
-        else:
-            query = (
-                f"{request.nicho.value} {request.nivel_detalle.value} "
-                f"{request.formato_salida.value}"
-            )
+            partes_query.append(" ".join(apartados_limpios[:5]))
+        partes_query.extend([
+            request.nicho.value,
+            request.nivel_detalle.value,
+            request.formato_salida.value,
+        ])
+        query = " ".join(partes_query)
         logger.info(
             "generate_content: recuperando chunks para documento_ids=%s, query='%s'",
             doc_ids,
