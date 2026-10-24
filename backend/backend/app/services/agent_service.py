@@ -133,9 +133,10 @@ class AgentService:
         nicho: str,
         nivel: str,
         tema_o_pregunta: str | None = None,
+        apartados: list[str] | None = None,
     ) -> tuple[str, str]:
         """
-        Construye el system_prompt y el user_prompt adaptados al perfil, formato y tema/pregunta.
+        Construye el system_prompt y el user_prompt adaptados al perfil, formato, tema/pregunta y apartados seleccionados.
 
         Args:
             chunks:          Lista de fragmentos del documento fuente recuperados por RAG.
@@ -144,6 +145,7 @@ class AgentService:
             nicho:           Sector de negocio (valor string del enum Nicho).
             nivel:           Nivel de detalle (valor string del enum NivelDetalle).
             tema_o_pregunta: Tema o pregunta orientadora ingresada por el usuario (opcional).
+            apartados:       Lista de títulos/subtítulos o apartados seleccionados (opcional).
 
         Returns:
             Tupla (system_prompt, user_prompt) listos para enviar al LLM.
@@ -158,7 +160,17 @@ class AgentService:
         )
 
         seccion_tema = ""
-        if tema_o_pregunta and tema_o_pregunta.strip():
+        apartados_limpios = [a.strip() for a in (apartados or []) if a and a.strip()]
+        if apartados_limpios:
+            apartados_str = "\n".join(f"- {a}" for a in apartados_limpios)
+            seccion_tema = (
+                f"\n\nAPARTADOS Y SECCIONES SELECCIONADOS DEL DOCUMENTO:\n"
+                f"El contenido educativo debe enfocarse y desarrollarse con prioridad sobre los siguientes apartados:\n"
+                f"{apartados_str}\n"
+                f"Aborda estos apartados y sus conceptos específicos con máxima prioridad pedagógica, "
+                f"manteniendo siempre la fundamentación documental estricta en las fuentes correspondientes."
+            )
+        elif tema_o_pregunta and tema_o_pregunta.strip():
             seccion_tema = (
                 f"\n\nTEMA O PREGUNTA ORIENTADORA DEL ESTUDIO:\n"
                 f"El contenido debe enfocarse y responder específicamente a: '{tema_o_pregunta.strip()}'.\n"
@@ -186,7 +198,13 @@ class AgentService:
         )
 
         instruccion_usuario = "Genera el contenido educativo solicitado basandote exclusivamente en los fragmentos anteriores."
-        if tema_o_pregunta and tema_o_pregunta.strip():
+        if apartados_limpios:
+            apartados_inline = ", ".join(f"'{a}'" for a in apartados_limpios)
+            instruccion_usuario = (
+                f"Apartados seleccionados para el estudio: {apartados_inline}.\n"
+                f"Genera el contenido educativo enfocado estrictamente en estos apartados basándote en los fragmentos anteriores."
+            )
+        elif tema_o_pregunta and tema_o_pregunta.strip():
             instruccion_usuario = (
                 f"Tema o pregunta orientadora: '{tema_o_pregunta.strip()}'.\n"
                 f"Genera el contenido educativo enfocado en este tema/pregunta basándote exclusivamente en los fragmentos anteriores."
@@ -307,9 +325,16 @@ class AgentService:
         # documento_ids está siempre normalizado por el model_validator del schema
         doc_ids: list[str] = request.documento_ids  # type: ignore[assignment]
 
-        # 1. Construir query semántica orientada por tema o parámetros
+        # 1. Construir query semántica orientada por apartados, tema o parámetros
         tema_clean = (request.tema_o_pregunta or "").strip()
-        if tema_clean:
+        apartados_limpios = [a.strip() for a in (request.apartados or []) if a and a.strip()]
+        if apartados_limpios:
+            foco_apartados = " ".join(apartados_limpios[:5])
+            query = (
+                f"{foco_apartados} {request.nicho.value} {request.nivel_detalle.value} "
+                f"{request.formato_salida.value}"
+            )
+        elif tema_clean:
             query = (
                 f"{tema_clean} {request.nicho.value} {request.nivel_detalle.value} "
                 f"{request.formato_salida.value}"
@@ -385,6 +410,7 @@ class AgentService:
             nicho=request.nicho.value,
             nivel=request.nivel_detalle.value,
             tema_o_pregunta=request.tema_o_pregunta,
+            apartados=request.apartados,
         )
 
         # 6. Invocar el LLM
@@ -431,6 +457,7 @@ class AgentService:
             "documento_ids": doc_ids,
             "documento_id": doc_id_principal,
             "tema_o_pregunta": request.tema_o_pregunta,
+            "apartados": request.apartados,
             "contenido": contenido_raw,
         }
         oci_result = self.oci.upload_artifact(artefacto, doc_id_principal)
@@ -452,6 +479,7 @@ class AgentService:
                 documento_id=doc_id_principal,
                 documento_ids=doc_ids,
                 tema_o_pregunta=request.tema_o_pregunta,
+                apartados=request.apartados or [],
                 perfil_destinatario=request.perfil_destinatario,
                 formato_salida=request.formato_salida,
                 nicho=request.nicho,

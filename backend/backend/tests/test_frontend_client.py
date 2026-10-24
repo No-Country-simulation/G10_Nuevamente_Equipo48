@@ -30,6 +30,7 @@ from frontend.app import (
     PERFIL_OPTIONS,
     extract_error_message,
     fetch_corpus_documents,
+    fetch_document_structure,
     ingest_corpus_document,
     request_adaptation,
     upload_file_to_backend,
@@ -398,5 +399,39 @@ def test_request_adaptation_ignora_tema_vacio():
         )
         _, kwargs = mock_post.call_args
         assert "tema_o_pregunta" not in kwargs["json"]
+
+
+def test_fetch_document_structure_exitoso():
+    """fetch_document_structure debe consultar GET /corpus/{id}/structure y retornar la lista de apartados."""
+    mock_resp = MagicMock(spec=requests.Response)
+    mock_resp.ok = True
+    mock_resp.json.return_value = {
+        "status": "ok",
+        "documento_id": "NM-004",
+        "apartados": [{"titulo": "1.1 Introducción", "nivel": 1, "pagina": 7}],
+    }
+    with patch("requests.get", return_value=mock_resp) as mock_get:
+        res = fetch_document_structure("http://localhost:8000", "NM-004")
+        assert len(res) == 1
+        assert res[0]["titulo"] == "1.1 Introducción"
+        mock_get.assert_called_once_with("http://localhost:8000/api/v1/files/corpus/NM-004/structure", timeout=15)
+
+
+def test_request_adaptation_con_apartados():
+    """request_adaptation debe incluir la lista de apartados en el payload enviado."""
+    mock_resp = MagicMock(spec=requests.Response)
+    mock_resp.ok = True
+    mock_resp.json.return_value = {"status": "ok"}
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        request_adaptation(
+            base_url="http://localhost:8000",
+            documento_ids=["NM-004"],
+            apartados=["1.1 Introducción", "1.2 Modelos"],
+        )
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        assert payload["apartados"] == ["1.1 Introducción", "1.2 Modelos"]
+
 
 

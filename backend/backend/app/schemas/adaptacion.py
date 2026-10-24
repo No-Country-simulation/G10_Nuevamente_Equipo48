@@ -118,12 +118,16 @@ class AdaptacionRequest(BaseModel):
         max_length=500,
         description="Tema específico o pregunta orientadora que guía el estudio focalizado.",
     )
+    apartados: list[str] | None = Field(
+        default=None,
+        description="Lista de apartados, títulos o subtítulos seleccionados para enfocar el estudio.",
+    )
 
     @model_validator(mode="after")
     def _resolver_documento_ids(self) -> "AdaptacionRequest":
         """
         Reconcilia documento_id y documento_ids en una única lista normalizada,
-        valida la restricción de 1 a 3 documentos y limpia el campo tema_o_pregunta.
+        valida la restricción de 1 a 3 documentos y limpia el campo tema_o_pregunta y apartados.
         """
         ids = self.documento_ids
         singular = self.documento_id
@@ -132,6 +136,11 @@ class AdaptacionRequest(BaseModel):
         if self.tema_o_pregunta is not None:
             t_clean = self.tema_o_pregunta.strip()
             self.tema_o_pregunta = t_clean if t_clean else None
+
+        # Limpiar apartados si viene lista
+        if self.apartados is not None:
+            ap_limpios = [a.strip() for a in self.apartados if a and a.strip()]
+            self.apartados = ap_limpios if ap_limpios else None
 
         # Caso 1: documento_ids presente
         if ids is not None:
@@ -213,6 +222,10 @@ class Metadatos(BaseModel):
     tema_o_pregunta: str | None = Field(
         default=None,
         description="Tema o pregunta orientadora que guió la recuperación y generación.",
+    )
+    apartados: list[str] = Field(
+        default_factory=list,
+        description="Lista de apartados seleccionados que guiaron el contenido.",
     )
     perfil_destinatario: PerfilDestinatario = Field(
         ..., description="Perfil del destinatario especificado en el request."

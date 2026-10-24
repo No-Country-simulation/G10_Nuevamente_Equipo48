@@ -225,6 +225,47 @@ def ingest_corpus_document(base_url: str, documento_id: str, timeout: int = 30) 
     return resp.json()
 
 
+def fetch_document_structure(base_url: str, documento_id: str, timeout: int = 15) -> list[dict]:
+    """
+    Obtiene los apartados, títulos y subtítulos de un documento del corpus
+    desde GET /api/v1/files/corpus/{documento_id}/structure, con fallback
+    a extracción local con DocumentService si el backend no responde.
+    """
+    url = f"{base_url.rstrip('/')}/api/v1/files/corpus/{documento_id}/structure"
+    try:
+        resp = requests.get(url, timeout=timeout)
+        if resp.ok:
+            data = resp.json()
+            if isinstance(data, dict) and "apartados" in data:
+                return data["apartados"]
+    except Exception:
+        pass
+
+    # Fallback local con DocumentService si el archivo existe en el corpus local
+    try:
+        from pathlib import Path
+        repo_root = Path(__file__).resolve().parent.parent
+        candidatos = [
+            repo_root / "_revision_corpus_fase05" / "documentos",
+            Path("_revision_corpus_fase05/documentos"),
+            Path("../_revision_corpus_fase05/documentos"),
+        ]
+        for c in candidatos:
+            if c.is_dir():
+                matches = list(c.glob(f"{documento_id}*/*.*"))
+                file_matches = [m for m in matches if m.is_file() and not m.name.startswith(".")]
+                if file_matches:
+                    from app.services.document_service import DocumentService
+                    doc_svc = DocumentService()
+                    target = file_matches[0]
+                    mime = "application/pdf" if target.suffix.lower() == ".pdf" else "text/markdown"
+                    return doc_svc.extract_structure(target.read_bytes(), mime)
+    except Exception:
+        pass
+
+    return []
+
+
 def request_adaptation(
     base_url: str,
     documento_id: str | None = None,
@@ -234,11 +275,13 @@ def request_adaptation(
     nivel: str = "didactico",
     documento_ids: list[str] | None = None,
     tema_o_pregunta: str | None = None,
+    apartados: list[str] | None = None,
     timeout: int = TIMEOUT_ADAPTACION_SECONDS,
 ) -> dict:
     """
     Envía la solicitud de adaptación pedagógica a POST /api/v1/adaptacion.
-    Soporta modo singular (documento_id), multi-documento (documento_ids) y tema/pregunta orientadora.
+    Soporta modo singular (documento_id), multi-documento (documento_ids),
+    apartados seleccionados y tema/pregunta orientadora.
     Retorna el diccionario con la respuesta estructurada completa.
     """
     url = f"{base_url.rstrip('/')}/api/v1/adaptacion"
@@ -254,6 +297,8 @@ def request_adaptation(
         payload["documento_id"] = documento_id
     if tema_o_pregunta and tema_o_pregunta.strip():
         payload["tema_o_pregunta"] = tema_o_pregunta.strip()
+    if apartados is not None and len(apartados) > 0:
+        payload["apartados"] = apartados
 
     response = requests.post(url, json=payload, timeout=timeout)
     if not response.ok:
@@ -537,25 +582,49 @@ def main() -> None:
             )
             selected_corpus_ids = selected_labels
 
-            # 4. Mostrar temas derivados del contenido real de los documentos seleccionados
-            temas_derivados = []
-            for doc in corpus_docs:
-                d_id = doc.get("identificador_documento") or doc.get("documento_id")
-                if d_id in selected_corpus_ids:
-                    t_val = (doc.get("tema") or "").strip()
-                    if t_val and t_val not in temas_derivados:
-                        temas_derivados.append(t_val)
+            # 4. Mostrar títulos y subtítulos reales disponibles en los documentos seleccionados
+            apartados_map: dict[str, dict] = {}
+            apartados_seleccionados: list[str] = []
 
-            # 5. Elegir el tema orientador (extraído de los documentos seleccionados)
-            tema_input = (
-                st.sidebar.selectbox(
-                    "💡 3. Tema disponible:",
-                    options=temas_derivados,
-                    help="Tema orientador extraído de los documentos seleccionados.",
-                )
-                or ""
+            if selected_corpus_ids:
+                with st.spinner("📑 Recuperando apartados y subtítulos de los documentos..."):
+                    for doc_id in selected_corpus_ids:
+                        secciones = fetch_document_structure(API_BASE_URL, doc_id)
+                        for s in secciones:
+                            t = (s.get("titulo") or "").strip()
+                            if not t:
+                                continue
+                            nivel = s.get("nivel", 1)
+                            indent = "  " * max(0, nivel - 1) + ("↳ " if nivel > 1 else "")
+                            label = f"[{doc_id}] {indent}{t}"
+                            apartados_map[label] = {
+                                "documento_id": doc_id,
+                                "titulo": t,
+                                "nivel": nivel,
+                                "pagina": s.get("pagina"),
+                            }
+
+                if apartados_map:
+                    apartados_seleccionados = st.sidebar.multiselect(
+                        "📖 3. Apartados y subtítulos a estudiar:",
+                        options=list(apartados_map.keys()),
+                        help="Selecciona los títulos y subtítulos específicos de los documentos elegidos que deseas estudiar.",
+                    )
+                else:
+                    st.sidebar.warning(
+                        "⚠️ Los documentos seleccionados no contienen apartados, índices o subtítulos estructurados recuperables."
+                    )
+
+            titulos_apartados = (
+                [apartados_map[k]["titulo"] for k in apartados_seleccionados]
+                if apartados_seleccionados
+                else []
             )
+            tema_input = " | ".join(titulos_apartados) if titulos_apartados else ""
         else:
+            apartados_map = {}
+            apartados_seleccionados = []
+            titulos_apartados = []
             st.sidebar.info(
                 "ℹ️ No se encontraron documentos en el catálogo del corpus. "
                 "Verifica que el backend esté corriendo o cambia a 'Cargar Archivo Nuevo'."
@@ -634,6 +703,17 @@ def main() -> None:
             if len(selected_corpus_ids) > 3:
                 st.error("⚠️ Puedes seleccionar un máximo de 3 documentos del corpus.")
                 st.stop()
+            if not apartados_map:
+                st.error(
+                    "⚠️ Los documentos seleccionados no contienen apartados recuperables. "
+                    "No es posible iniciar la adaptación sin apartados disponibles."
+                )
+                st.stop()
+            if not apartados_seleccionados:
+                st.error(
+                    "⚠️ Selecciona al menos un apartado (título o subtítulo) de los documentos seleccionados."
+                )
+                st.stop()
         else:
             if archivo_subido is None:
                 st.error(
@@ -684,6 +764,7 @@ def main() -> None:
                         nicho="general",
                         nivel=NIVEL_OPTIONS[nivel_label],
                         tema_o_pregunta=tema_limpio,
+                        apartados=titulos_apartados,
                     )
             else:
                 # ── Caso Upload: subir archivo y enviar un solo doc ─────────────
@@ -739,6 +820,17 @@ def main() -> None:
                     f"<div style='background: rgba(99,102,241,0.12); border-left: 3px solid #818cf8; "
                     f"padding: 8px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 0.85rem;'>"
                     f"📚 <b>Documentos combinados ({len(doc_ids_usados)}):</b> {docs_badge}</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # Badge de apartados seleccionados
+            apartados_estudiados = metadatos.get("apartados", []) or titulos_apartados
+            if apartados_estudiados:
+                ap_badges = " · ".join(f"`{a}`" for a in apartados_estudiados)
+                st.markdown(
+                    f"<div style='background: rgba(16, 185, 129, 0.12); border-left: 3px solid #10b981; "
+                    f"padding: 8px 14px; border-radius: 6px; margin-bottom: 12px; font-size: 0.85rem;'>"
+                    f"📖 <b>Apartados estudiados ({len(apartados_estudiados)}):</b> {ap_badges}</div>",
                     unsafe_allow_html=True,
                 )
 

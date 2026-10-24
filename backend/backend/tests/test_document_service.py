@@ -318,3 +318,45 @@ class TestTXTUnicodeEspecial:
         resultado = service.extract_text(pdf_bytes, "application/pdf")
         assert texto_esperado in resultado
 
+    def test_extract_structure_pdf_con_toc(self, service: DocumentService) -> None:
+        """Verifica que extract_structure extrae correctamente los títulos y subtítulos desde un PDF con TOC."""
+        import fitz
+
+        doc = fitz.open()
+        p1 = doc.new_page()
+        p1.insert_text((50, 72), "Capitulo 1: Fundamentos de Redes")
+        p2 = doc.new_page()
+        p2.insert_text((50, 72), "1.1 Protocolo TCP/IP")
+        doc.set_toc([
+            [1, "Capitulo 1: Fundamentos de Redes", 1],
+            [2, "1.1 Protocolo TCP/IP", 2],
+        ])
+        pdf_bytes = doc.tobytes()
+        doc.close()
+
+        secciones = service.extract_structure(pdf_bytes, "application/pdf")
+        assert len(secciones) == 2
+        assert secciones[0]["titulo"] == "Capitulo 1: Fundamentos de Redes"
+        assert secciones[0]["nivel"] == 1
+        assert secciones[0]["pagina"] == 1
+        assert secciones[1]["titulo"] == "1.1 Protocolo TCP/IP"
+        assert secciones[1]["nivel"] == 2
+        assert secciones[1]["pagina"] == 2
+
+    def test_extract_structure_markdown(self, service: DocumentService) -> None:
+        """Verifica que extract_structure extrae títulos y subtítulos de Markdown."""
+        md_content = "# Arquitectura de Software\nTexto introductorio...\n## Patrón MVC\nExplicación..."
+        secciones = service.extract_structure(md_content.encode("utf-8"), "text/markdown")
+        assert len(secciones) == 2
+        assert secciones[0]["titulo"] == "Arquitectura de Software"
+        assert secciones[0]["nivel"] == 1
+        assert secciones[1]["titulo"] == "Patrón MVC"
+        assert secciones[1]["nivel"] == 2
+
+    def test_extract_structure_sin_estructura_retorna_vacio(self, service: DocumentService) -> None:
+        """Si un documento no tiene estructura reconocible, debe retornar lista vacía sin inventar títulos."""
+        txt_simple = "Este es un texto plano sin ningún tipo de encabezado ni numeración formal."
+        secciones = service.extract_structure(txt_simple.encode("utf-8"), "text/plain")
+        assert secciones == []
+
+

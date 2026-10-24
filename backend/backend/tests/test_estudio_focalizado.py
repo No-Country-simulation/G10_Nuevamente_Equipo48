@@ -590,3 +590,66 @@ class TestAgentServiceRegresionFirma:
         resp = svc.generate_content(req)
         assert resp.metadatos.tiempo_estimado_estudio_minutos >= 1
         assert isinstance(resp.metadatos.conceptos_clave, list)
+
+
+class TestApartadosEstudioFocalizado:
+    """Pruebas para la selección y orientación por apartados en Estudio Focalizado."""
+
+    def test_schema_apartados_se_limpian(self):
+        """Los apartados con espacios en blanco o vacíos se normalizan."""
+        req = AdaptacionRequest(
+            documento_ids=["doc-1"],
+            apartados=["  1.1 Introducción  ", " ", "2.1 Modelos"],
+            **{k: v for k, v in REQUEST_BASE.items()},
+        )
+        assert req.apartados == ["1.1 Introducción", "2.1 Modelos"]
+
+    def test_agent_service_con_apartados_enfoca_prompt_y_query(self):
+        """AgentService incluye los apartados seleccionados en el prompt y en la query RAG."""
+        mock_rag = MagicMock()
+        mock_rag.document_exists.return_value = True
+        mock_rag.retrieve_multi.return_value = (
+            [ChunkMetadata(chunk_id="c1", documento_id="doc-1", texto="Contenido de modelos.", posicion=0, score=0.95)],
+            [],
+        )
+        mock_rag.generate_embeddings.return_value = np.array([[0.95]], dtype=np.float32)
+
+        mock_llm = MagicMock()
+        mock_llm.generate.return_value = "Contenido adaptado sobre modelos."
+        mock_oci = MagicMock()
+        mock_oci.upload_artifact.return_value = OCIUploadResult(status="ok")
+
+        svc = AgentService(rag=mock_rag, llm=mock_llm, oci=mock_oci)
+        req = AdaptacionRequest(
+            documento_ids=["doc-1"],
+            apartados=["1.1 Introducción", "2.1 Modelos de Datos"],
+            **{k: v for k, v in REQUEST_BASE.items()},
+        )
+        resp = svc.generate_content(req)
+
+        # 1. Query RAG debe incluir los apartados
+        call_query = mock_rag.retrieve_multi.call_args[1]["query"]
+        assert "1.1 Introducción" in call_query or "2.1 Modelos" in call_query
+
+        # 2. Prompts enviados al LLM deben referenciar los apartados
+        user_prompt_sent = mock_llm.generate.call_args[0][0]
+        system_prompt_sent = mock_llm.generate.call_args[0][1]
+        assert "1.1 Introducción" in user_prompt_sent or "1.1 Introducción" in system_prompt_sent
+
+        # 3. Metadatos de respuesta deben contener los apartados
+        assert resp.metadatos.apartados == ["1.1 Introducción", "2.1 Modelos de Datos"]
+
+    def test_endpoint_corpus_structure(self):
+        """GET /api/v1/files/corpus/{id}/structure retorna apartados del documento si existe."""
+        from app.services.document_service import DocumentService
+        app.state.document_service = DocumentService()
+        client = TestClient(app)
+        resp = client.get("/api/v1/files/corpus/NM-006/structure")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["documento_id"] == "NM-006"
+        assert "apartados" in data
+        assert isinstance(data["apartados"], list)
+        assert len(data["apartados"]) > 0
+
