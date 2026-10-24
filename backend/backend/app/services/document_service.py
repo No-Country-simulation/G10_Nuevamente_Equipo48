@@ -77,6 +77,29 @@ class DocumentService:
                 detail=f"mime_type recibido: {mime_type!r}",
             )
 
+    def extract_structure(self, file_bytes: bytes, mime_type: str) -> list[dict]:
+        """
+        Extrae la estructura documental (títulos, subtítulos y apartados)
+        según el tipo MIME del archivo.
+
+        Args:
+            file_bytes: Contenido binario del archivo.
+            mime_type:  Tipo MIME del archivo.
+
+        Returns:
+            Lista de diccionarios con formato:
+            [{"titulo": "...", "nivel": 1, "pagina": 5}, ...]
+            Retorna lista vacía si el documento no tiene estructura recuperable.
+        """
+        mime_base = mime_type.split(";")[0].strip().lower()
+        if mime_base == _MIME_PDF:
+            return self._extract_pdf_structure(file_bytes)
+        elif mime_base == _MIME_MARKDOWN:
+            return self._extract_markdown_structure(file_bytes)
+        elif mime_base == _MIME_PLAIN:
+            return self._extract_txt_structure(file_bytes)
+        return []
+
     # ------------------------------------------------------------------
     # Extracción de PDF
     # ------------------------------------------------------------------
@@ -312,3 +335,192 @@ class DocumentService:
             )
 
         return texto
+
+    # ------------------------------------------------------------------
+    # Extracción de estructura documental
+    # ------------------------------------------------------------------
+
+    def _extract_pdf_structure(self, file_bytes: bytes) -> list[dict]:
+        """
+        Extrae la estructura jerárquica de un PDF a partir de marcadores internos (TOC)
+        o mediante análisis de índices impresos y encabezados del documento.
+        """
+        try:
+            documento = fitz.open(stream=file_bytes, filetype="pdf")
+        except Exception:
+            return []
+
+        if documento.page_count == 0:
+            return []
+
+        # 1. Marcadores internos (TOC / Outlines)
+        try:
+            toc = documento.get_toc()
+            if toc:
+                sections = []
+                for lvl, title, page in toc:
+                    t = (title or "").strip()
+                    if t and not t.startswith("_Hlk") and len(t) > 2:
+                        sections.append({
+                            "titulo": t,
+                            "nivel": int(lvl),
+                            "pagina": int(page),
+                        })
+                if sections:
+                    return sections
+        except Exception:
+            pass
+
+        # 2. Búsqueda de índice impreso en las primeras páginas
+        index_re = re.compile(
+            r"^(?:[ií]ndice|tabla de contenido|contenido|tabla de contenidos|table of contents)\b",
+            re.IGNORECASE,
+        )
+        sec_num_line_re = re.compile(r"^(\d+(\.\d+){1,4})\s*[\t\. ]+(.+)$")
+        sec_num_only_re = re.compile(r"^(\d+(\.\d+){1,4})$")
+        chap_re = re.compile(r"^(?:cap[íi]tulo|m[óo]dulo|unidad)\s+\d+[:\.\s]*(.*)", re.IGNORECASE)
+
+        sections: list[dict] = []
+        seen: set[str] = set()
+        in_index = False
+
+        for pno in range(min(20, documento.page_count)):
+            try:
+                pagina = documento.load_page(pno)
+                text = pagina.get_text()
+            except Exception:
+                continue
+
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                if not in_index and index_re.match(line):
+                    in_index = True
+                    i += 1
+                    continue
+
+                if in_index:
+                    # Título de capítulo
+                    if chap_re.match(line):
+                        t = line
+                        if i + 1 < len(lines) and not sec_num_only_re.match(lines[i + 1]) and not lines[i + 1].isdigit():
+                            t = f"{line}: {lines[i + 1]}"
+                            i += 1
+                        if t not in seen and len(t) < 120:
+                            seen.add(t)
+                            sections.append({"titulo": t, "nivel": 1, "pagina": pno + 1})
+                        i += 1
+                        continue
+
+                    # Número en línea i, título en línea i+1
+                    m_only = sec_num_only_re.match(line)
+                    if m_only and i + 1 < len(lines) and not sec_num_only_re.match(lines[i + 1]) and not lines[i + 1].isdigit():
+                        num = m_only.group(1)
+                        t = f"{num} {lines[i + 1]}"
+                        if t not in seen and len(t) < 120:
+                            seen.add(t)
+                            sections.append({"titulo": t, "nivel": max(1, min(num.count(".") + 1, 3)), "pagina": pno + 1})
+                        i += 2
+                        continue
+
+                    # Número + título en la misma línea
+                    m_num = sec_num_line_re.match(line)
+                    if m_num:
+                        num = m_num.group(1)
+                        t = f"{num} {m_num.group(3).strip()}"
+                        if t not in seen and len(t) < 120:
+                            seen.add(t)
+                            sections.append({"titulo": t, "nivel": max(1, min(num.count(".") + 1, 3)), "pagina": pno + 1})
+                        i += 1
+                        continue
+
+                    # Título ... Página en la misma línea
+                    m_dot = re.match(r"^(.+?)(?:[\t\.]{2,}|\s{3,}|\t+)(\d+)$", line)
+                    if m_dot:
+                        t = m_dot.group(1).strip()
+                        pg = int(m_dot.group(2))
+                        if len(t) > 2 and len(t) < 120 and t not in seen:
+                            seen.add(t)
+                            lvl = (t.count(".") + 1) if t[0].isdigit() else 1
+                            sections.append({"titulo": t, "nivel": max(1, min(lvl, 3)), "pagina": pg})
+                        i += 1
+                        continue
+
+                    # Título en línea i, página en línea i+1
+                    if i + 1 < len(lines) and lines[i + 1].isdigit() and not line.isdigit() and len(line) > 2 and len(line) < 120:
+                        t = line.strip()
+                        pg = int(lines[i + 1])
+                        if t not in seen:
+                            seen.add(t)
+                            lvl = (t.count(".") + 1) if t[0].isdigit() else 1
+                            sections.append({"titulo": t, "nivel": max(1, min(lvl, 3)), "pagina": pg})
+                        i += 2
+                        continue
+
+                i += 1
+
+            if sections and in_index and pno > 10 and not any(sec_num_only_re.match(l) or chap_re.match(l) for l in lines):
+                break
+
+        if sections:
+            return sections
+
+        # 3. Fallback: búsqueda de encabezados en el cuerpo del documento
+        for pno in range(min(40, documento.page_count)):
+            try:
+                pagina = documento.load_page(pno)
+                text = pagina.get_text()
+            except Exception:
+                continue
+
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            for line in lines:
+                if chap_re.match(line) and len(line) < 100 and line not in seen:
+                    seen.add(line)
+                    sections.append({"titulo": line, "nivel": 1, "pagina": pno + 1})
+                elif sec_num_line_re.match(line) and len(line) < 100:
+                    m = sec_num_line_re.match(line)
+                    t = f"{m.group(1)} {m.group(3).strip()}"
+                    if t not in seen:
+                        seen.add(t)
+                        sections.append({"titulo": t, "nivel": max(1, min(m.group(1).count(".") + 1, 3)), "pagina": pno + 1})
+
+        return sections
+
+    def _extract_markdown_structure(self, file_bytes: bytes) -> list[dict]:
+        """Extrae encabezados Markdown (# Título, ## Subtítulo)."""
+        try:
+            texto = file_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            return []
+
+        heading_re = re.compile(r"^(#{1,6})\s+(.+)$")
+        sections: list[dict] = []
+        for line in texto.splitlines():
+            m = heading_re.match(line.strip())
+            if m:
+                lvl = len(m.group(1))
+                t = m.group(2).strip()
+                if t:
+                    sections.append({"titulo": t, "nivel": lvl, "pagina": None})
+        return sections
+
+    def _extract_txt_structure(self, file_bytes: bytes) -> list[dict]:
+        """Extrae encabezados de texto plano."""
+        try:
+            texto = file_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            return []
+
+        chap_re = re.compile(
+            r"^(?:cap[íi]tulo|m[óo]dulo|unidad|\d+(\.\d+)+)\s+([A-ZÁÉÍÓÚÑ].*)",
+            re.IGNORECASE,
+        )
+        sections: list[dict] = []
+        for line in texto.splitlines():
+            line_s = line.strip()
+            if chap_re.match(line_s) and len(line_s) < 100:
+                sections.append({"titulo": line_s, "nivel": 1, "pagina": None})
+        return sections
+

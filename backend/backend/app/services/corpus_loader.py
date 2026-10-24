@@ -224,6 +224,9 @@ def get_corpus_status(rag_service: RAGService | None = None) -> list[dict]:
         eval_res = row.get("resultado_evaluacion", "PENDIENTE").strip()
         licencia = row.get("licencia", "No especificada").strip()
         fuente = row.get("fuente", "").strip()
+        dominio = row.get("dominio", "General").strip()
+        tema = row.get("tema", "").strip()
+        descripcion = row.get("descripcion", "").strip()
 
         # Determinar existencia física del archivo
         archivo_fisico = False
@@ -252,6 +255,9 @@ def get_corpus_status(rag_service: RAGService | None = None) -> list[dict]:
         results.append({
             "identificador_documento": doc_id,
             "titulo": titulo,
+            "dominio": dominio,
+            "tema": tema,
+            "descripcion": descripcion,
             "resultado_evaluacion": eval_res,
             "licencia": licencia,
             "fuente": fuente,

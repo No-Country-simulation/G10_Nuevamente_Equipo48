@@ -22,9 +22,11 @@ from app.core.config import settings
 from app.core.exceptions import (
     ConfigurationError,
     DocumentNotFoundError,
+    EmptySelectionError,
     ExtractionError,
     LLMGenerationError,
     LLMNotConfiguredError,
+    NoRelevantSourcesError,
 )
 from app.api.v1.endpoints import health, files, adaptacion
 from app.services.document_service import DocumentService
@@ -204,6 +206,40 @@ async def document_not_found_handler(
     """Maneja la excepción de documento no encontrado (HTTP 404)."""
     logger.warning(
         "Documento no encontrado en %s %s: %s",
+        request.method,
+        request.url.path,
+        exc.detail,
+    )
+    return JSONResponse(
+        status_code=404,
+        content={"error": exc.message, "detalle": exc.detail},
+    )
+
+
+@app.exception_handler(EmptySelectionError)
+async def empty_selection_handler(
+    request: Request, exc: EmptySelectionError
+) -> JSONResponse:
+    """Maneja la excepción de selección vacía de documentos (HTTP 400)."""
+    logger.warning(
+        "Selección vacía en %s %s: %s",
+        request.method,
+        request.url.path,
+        exc.detail,
+    )
+    return JSONResponse(
+        status_code=400,
+        content={"error": exc.message, "detalle": exc.detail},
+    )
+
+
+@app.exception_handler(NoRelevantSourcesError)
+async def no_relevant_sources_handler(
+    request: Request, exc: NoRelevantSourcesError
+) -> JSONResponse:
+    """Maneja la excepción de ausencia de fuentes relevantes (HTTP 404)."""
+    logger.warning(
+        "Sin fuentes relevantes en %s %s: %s",
         request.method,
         request.url.path,
         exc.detail,

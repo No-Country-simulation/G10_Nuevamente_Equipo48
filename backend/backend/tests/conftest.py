@@ -76,8 +76,7 @@ def mock_rag_service():
     mock = MagicMock()
     mock.document_exists.return_value = True
     mock.ingest_document.return_value = 3  # 3 chunks indexados
-    # Retorna chunks de prueba representativos del dominio fintech
-    mock.retrieve.return_value = [
+    mock_chunks = [
         ChunkMetadata(
             chunk_id="chunk-001",
             documento_id="doc-test-123",
@@ -93,6 +92,8 @@ def mock_rag_service():
             score=0.72,
         ),
     ]
+    mock.retrieve.return_value = mock_chunks
+    mock.retrieve_multi.return_value = (mock_chunks, [])
     # generate_embeddings retorna un array numpy normalizado de dimensión 384
     mock.generate_embeddings.return_value = (
         np.ones((1, 384), dtype=np.float32) / np.sqrt(384)
