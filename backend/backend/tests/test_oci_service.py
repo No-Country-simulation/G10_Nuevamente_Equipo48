@@ -151,3 +151,59 @@ def test_oci_upload_result_error():
     result = OCIUploadResult(status="error", detalle="Timeout de conexión")
     assert result.status == "error"
     assert "Timeout" in result.detalle
+
+
+def test_oci_instance_principals_init_and_operations():
+    """Verifica inicialización y operaciones con Instance Principals cuando no hay claves de usuario."""
+    mock_settings = MagicMock()
+    mock_settings.oci_configured = True
+    mock_settings.oci_namespace = "test-ns"
+    mock_settings.oci_bucket_name = "test-bucket"
+    mock_settings.oci_region = "sa-bogota-1"
+    mock_settings.oci_auth_type = "auto"
+    mock_settings.oci_user_ocid = ""
+    mock_settings.oci_fingerprint = ""
+    mock_settings.oci_tenancy_ocid = ""
+    mock_settings.oci_private_key_path = ""
+
+    import oci
+
+    with (
+        patch.object(oci.auth.signers, "InstancePrincipalsSecurityTokenSigner") as mock_signer_cls,
+        patch.object(oci.object_storage, "ObjectStorageClient") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_signer_cls.return_value = MagicMock()
+
+        # Configurar retorno de get_object
+        mock_get_resp = MagicMock()
+        mock_get_resp.data.content = b"contenido recuperado"
+        mock_client.get_object.return_value = mock_get_resp
+
+        service = OCIService(mock_settings)
+        assert service._modo_degradado is False
+
+        # Probar get_object
+        data = service.get_object("documentos/123/archivo.pdf")
+        assert data == b"contenido recuperado"
+
+        # Probar delete_object
+        del_ok = service.delete_object("documentos/123/archivo.pdf")
+        assert del_ok is True
+        mock_client.delete_object.assert_called_once_with(
+            namespace_name="test-ns",
+            bucket_name="test-bucket",
+            object_name="documentos/123/archivo.pdf",
+        )
+
+
+def test_get_object_and_delete_object_en_modo_degradado():
+    """get_object y delete_object en modo degradado deben retornar None y False respectivamente."""
+    mock_settings = MagicMock()
+    mock_settings.oci_configured = False
+
+    service = OCIService(mock_settings)
+    assert service._modo_degradado is True
+    assert service.get_object("test/key") is None
+    assert service.delete_object("test/key") is False

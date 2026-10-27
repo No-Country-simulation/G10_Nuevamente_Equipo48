@@ -170,15 +170,20 @@ async def upload_file(
 
 
 @router.get("/corpus", tags=["Documentos"])
-async def listar_documentos_corpus(request: Request):
+async def listar_documentos_corpus(request: Request, solo_disponibles: bool = False):
     """
     Lista el inventario completo del corpus documental, diferenciando
     entre documentos disponibles, documentos procesados e indexados,
     y documentos registrados pendientes o no aptos.
+
+    Si solo_disponibles=True, retorna exclusivamente documentos que cumplan:
+      1. Clasificación pedagógica APTO o APTO_CON_REVISIÓN.
+      2. Archivo físico válido y compatible (.pdf, .md, .txt).
+      3. Ruta resoluble correctamente por el backend.
     """
     from app.services.corpus_loader import get_corpus_status
     rag_service = getattr(request.app.state, "rag_service", None)
-    return get_corpus_status(rag_service)
+    return get_corpus_status(rag_service, only_available=solo_disponibles)
 
 
 @router.post("/corpus/{documento_id}/ingest", tags=["Documentos"])
@@ -187,7 +192,7 @@ async def ingestar_documento_corpus(documento_id: str, request: Request):
     Permite ingestar bajo demanda un documento del corpus disponible y APTO en FAISS,
     sin necesidad de reiniciar la aplicación ni reconstruirla.
     """
-    from app.services.corpus_loader import find_corpus_root, get_corpus_status
+    from app.services.corpus_loader import find_corpus_root, get_corpus_status, resolve_corpus_file
 
     rag_service: RAGService = request.app.state.rag_service
     document_service: DocumentService = request.app.state.document_service
@@ -215,12 +220,12 @@ async def ingestar_documento_corpus(documento_id: str, request: Request):
             },
         )
 
-    if doc_meta["resultado_evaluacion"] != "APTO":
+    if doc_meta["resultado_evaluacion"] not in ("APTO", "APTO_CON_REVISIÓN"):
         raise HTTPException(
             status_code=400,
             detail={
                 "error": f"El documento '{documento_id}' tiene evaluación '{doc_meta['resultado_evaluacion']}'.",
-                "detalle": "Por gobernanza pedagógica, solo los documentos con evaluación APTO pueden ser procesados.",
+                "detalle": "Por gobernanza pedagógica, los documentos con evaluación NO_APTO no pueden ser procesados.",
             },
         )
 
@@ -234,19 +239,15 @@ async def ingestar_documento_corpus(documento_id: str, request: Request):
             },
         )
 
-    matches = list(corpus_root.glob(f"{documento_id}*/*.*"))
-    file_matches = [m for m in matches if m.is_file() and not m.name.startswith(".")]
-
-    if not file_matches:
+    target_file = resolve_corpus_file(documento_id, corpus_root, only_valid=False)
+    if not target_file:
         raise HTTPException(
             status_code=404,
             detail={
                 "error": f"Archivo físico no encontrado para el documento '{documento_id}'.",
-                "detalle": "El documento está registrado en el inventario pero el archivo local no está presente.",
+                "detalle": "El documento está registrado en el inventario pero el archivo local no está presente o no es válido.",
             },
         )
-
-    target_file = file_matches[0]
     ext = target_file.suffix.lower()
     mime_map = {
         ".pdf": "application/pdf",
@@ -264,7 +265,16 @@ async def ingestar_documento_corpus(documento_id: str, request: Request):
         )
 
     file_bytes = target_file.read_bytes()
-    text = document_service.extract_text(file_bytes, mime_type)
+    try:
+        text = document_service.extract_text(file_bytes, mime_type)
+    except ExtractionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": exc.message,
+                "detalle": exc.detail,
+            },
+        ) from exc
     if not text.strip():
         raise HTTPException(
             status_code=422,
@@ -291,7 +301,7 @@ async def obtener_estructura_documento_corpus(documento_id: str, request: Reques
     """
     Extrae y retorna los apartados, títulos y subtítulos del documento del corpus.
     """
-    from app.services.corpus_loader import find_corpus_root, get_corpus_status
+    from app.services.corpus_loader import find_corpus_root, get_corpus_status, resolve_corpus_file
     document_service = getattr(request.app.state, "document_service", None)
     if document_service is None:
         document_service = DocumentService()
@@ -317,18 +327,15 @@ async def obtener_estructura_documento_corpus(documento_id: str, request: Reques
             },
         )
 
-    matches = list(corpus_root.glob(f"{documento_id}*/*.*"))
-    file_matches = [m for m in matches if m.is_file() and not m.name.startswith(".")]
-    if not file_matches:
+    target_file = resolve_corpus_file(documento_id, corpus_root, only_valid=False)
+    if not target_file:
         raise HTTPException(
             status_code=404,
             detail={
                 "error": f"Archivo físico no encontrado para el documento '{documento_id}'.",
-                "detalle": "El documento está registrado en el inventario pero el archivo local no está presente.",
+                "detalle": "El documento está registrado en el inventario pero el archivo local no está presente o no es válido.",
             },
         )
-
-    target_file = file_matches[0]
     ext = target_file.suffix.lower()
     mime_map = {
         ".pdf": "application/pdf",

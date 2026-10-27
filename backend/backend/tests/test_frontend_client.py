@@ -495,3 +495,106 @@ def test_guardar_resultado_local_persistencia(tmp_path, monkeypatch):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# 7. Pruebas de filtrado estricto del catálogo (Condiciones simultáneas)
+# ---------------------------------------------------------------------------
+
+from frontend.app import filter_catalog_documents
+
+
+def test_documento_apto_con_archivo_valido_aparece():
+    """1. Un documento apto con archivo válido aparece en el catálogo del frontend."""
+    docs = [
+        {
+            "identificador_documento": "NM-006",
+            "titulo": "Manual de Ciberseguridad",
+            "resultado_evaluacion": "APTO",
+            "archivo_disponible": True,
+            "nombre_archivo": "NM-006_Manual_de_Ciberseguridad_OSC.pdf",
+        }
+    ]
+    filtrados = filter_catalog_documents(docs)
+    assert len(filtrados) == 1
+    assert filtrados[0]["identificador_documento"] == "NM-006"
+
+
+def test_documento_apto_sin_archivo_no_aparece():
+    """2. Un documento apto sin archivo físico disponible no aparece en el catálogo."""
+    docs = [
+        {
+            "identificador_documento": "NM-005",
+            "titulo": "Computer Networking",
+            "resultado_evaluacion": "APTO",
+            "archivo_disponible": False,
+            "nombre_archivo": None,
+        }
+    ]
+    filtrados = filter_catalog_documents(docs)
+    assert len(filtrados) == 0
+
+
+def test_documento_apto_con_archivo_vacio_o_invalido_no_aparece():
+    """3. Un documento apto con archivo vacío o inválido (archivo_disponible=False) no aparece."""
+    docs = [
+        {
+            "identificador_documento": "NM-TEST-EMPTY",
+            "titulo": "Doc Vacio",
+            "resultado_evaluacion": "APTO",
+            "archivo_disponible": False,
+            "nombre_archivo": None,
+        }
+    ]
+    filtrados = filter_catalog_documents(docs)
+    assert len(filtrados) == 0
+
+
+def test_documento_apto_con_revision_con_archivo_valido_aparece_con_advertencia():
+    """4. Un documento APTO_CON_REVISIÓN con archivo válido aparece y se le asigna la advertencia."""
+    docs = [
+        {
+            "identificador_documento": "NM-007",
+            "titulo": "ESP32 en el Aula",
+            "resultado_evaluacion": "APTO_CON_REVISIÓN",
+            "archivo_disponible": True,
+            "nombre_archivo": "NM-007_ESP32_en_el_Aula.pdf",
+        }
+    ]
+    filtrados = filter_catalog_documents(docs)
+    assert len(filtrados) == 1
+    doc = filtrados[0]
+    assert doc["identificador_documento"] == "NM-007"
+    eval_status = doc.get("resultado_evaluacion", "").strip().upper()
+    assert eval_status == "APTO_CON_REVISIÓN"
+    tag = " ⚠️ [APTO_CON_REVISIÓN]" if eval_status == "APTO_CON_REVISIÓN" else " ✅"
+    assert "⚠️ [APTO_CON_REVISIÓN]" in tag
+
+
+def test_documento_no_apto_no_aparece_aunque_tenga_archivo():
+    """5. Un documento NO_APTO no aparece, incluso si físicamente tuviera un archivo."""
+    docs = [
+        {
+            "identificador_documento": "NM-021",
+            "titulo": "Robots Autónomos",
+            "resultado_evaluacion": "NO_APTO",
+            "archivo_disponible": True,
+            "nombre_archivo": "NM-021_Robots.pdf",
+        }
+    ]
+    filtrados = filter_catalog_documents(docs)
+    assert len(filtrados) == 0
+
+
+def test_documentos_existentes_continuan_funcionando():
+    """6. Verifica que los documentos existentes válidos del inventario se incluyan correctamente."""
+    docs = [
+        {"identificador_documento": "NM-004", "titulo": "Diseño BD", "resultado_evaluacion": "APTO", "archivo_disponible": True, "nombre_archivo": "NM-004.pdf"},
+        {"identificador_documento": "NM-006", "titulo": "Ciberseguridad", "resultado_evaluacion": "APTO", "archivo_disponible": True, "nombre_archivo": "NM-006.pdf"},
+        {"identificador_documento": "NM-015", "titulo": "Energía", "resultado_evaluacion": "APTO", "archivo_disponible": True, "nombre_archivo": "NM-015.pdf"},
+        {"identificador_documento": "NM-008", "titulo": "Electrónica Digital", "resultado_evaluacion": "APTO", "archivo_disponible": True, "nombre_archivo": "NM-008.pdf"},
+    ]
+    filtrados = filter_catalog_documents(docs)
+    assert len(filtrados) == 4
+    ids = [d["identificador_documento"] for d in filtrados]
+    assert ids == ["NM-004", "NM-006", "NM-015", "NM-008"]

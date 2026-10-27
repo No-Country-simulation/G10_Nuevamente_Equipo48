@@ -401,3 +401,192 @@ async def test_fastapi_lifespan_initializes_services_and_preloads():
             called_kwargs = mock_preload_call.call_args.kwargs
             assert called_kwargs["rag_service"] is app.state.rag_service
             assert called_kwargs["document_service"] is app.state.document_service
+
+
+# ---------------------------------------------------------------------------
+# 8. Pruebas deterministas de selección de archivos del corpus (NM-008 / Multi-formato)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_corpus_file_prioritizes_pdf_over_html(tmp_path: Path):
+    """1. Cuando existen NM-008.pdf y NM-008.html, se selecciona el PDF deterministamente."""
+    from app.services.corpus_loader import resolve_corpus_file
+
+    doc_dir = tmp_path / "NM-008_Electronica_Digital"
+    doc_dir.mkdir(parents=True, exist_ok=True)
+
+    # Crear ambos archivos; html alfabéticamente va primero
+    html_file = doc_dir / "NM-008_Electronica_Digital.html"
+    html_file.write_text("<html><body>Contenido Web</body></html>", encoding="utf-8")
+
+    pdf_file = doc_dir / "NM-008_Electronica_Digital.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4\n%fake valid header with content\n%%EOF")
+
+    resolved = resolve_corpus_file("NM-008", corpus_root=tmp_path)
+    assert resolved is not None
+    assert resolved.name == "NM-008_Electronica_Digital.pdf"
+    assert resolved.suffix.lower() == ".pdf"
+
+
+def test_resolve_corpus_file_single_html_selected_gracefully(tmp_path: Path):
+    """2. Cuando solo existe un archivo HTML válido, no se rompe su tratamiento."""
+    from app.services.corpus_loader import resolve_corpus_file
+
+    doc_dir = tmp_path / "COMP-02_Banca_FinTech"
+    doc_dir.mkdir(parents=True, exist_ok=True)
+
+    html_file = doc_dir / "COMP-02_Finanzas_Abiertas.html"
+    html_file.write_text("<html><body>Contenido HTML Legítimo</body></html>", encoding="utf-8")
+
+    resolved = resolve_corpus_file("COMP-02", corpus_root=tmp_path)
+    assert resolved is not None
+    assert resolved.name == "COMP-02_Finanzas_Abiertas.html"
+
+
+def test_resolve_corpus_file_empty_or_corrupt_pdf_handled_gracefully(tmp_path: Path):
+    """3. Cuando el PDF está vacío o es inválido, el sistema gestiona el caso de forma controlada."""
+    from app.services.corpus_loader import resolve_corpus_file
+
+    doc_dir = tmp_path / "NM-TEST_Empty"
+    doc_dir.mkdir(parents=True, exist_ok=True)
+
+    empty_pdf = doc_dir / "NM-TEST.pdf"
+    empty_pdf.write_bytes(b"")  # 0 bytes
+
+    # Con only_valid=True, se descarta archivo vacío
+    resolved_strict = resolve_corpus_file("NM-TEST", corpus_root=tmp_path, only_valid=True)
+    assert resolved_strict is None
+
+    # Si coexiste un archivo no vacío alternativo (ej. HTML), se prefiere el archivo con contenido
+    alt_file = doc_dir / "NM-TEST.html"
+    alt_file.write_text("<html>Contenido</html>", encoding="utf-8")
+
+    resolved_alt = resolve_corpus_file("NM-TEST", corpus_root=tmp_path)
+    assert resolved_alt is not None
+    assert resolved_alt.name == "NM-TEST.html"
+
+
+def test_nm008_real_pdf_extracts_structure_and_can_be_ingested():
+    """4. El procesamiento del PDF real de NM-008 extrae sus apartados y permite ingesta."""
+    from app.services.corpus_loader import find_corpus_root, resolve_corpus_file
+    from app.services.document_service import DocumentService
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    corpus_root = find_corpus_root()
+    if not corpus_root or not (corpus_root / "NM-008_Electronica_Digital" / "NM-008_Electronica_Digital.pdf").exists():
+        pytest.skip("Corpus físico NM-008 no disponible en el entorno")
+
+    target = resolve_corpus_file("NM-008", corpus_root)
+    assert target is not None
+    assert target.suffix.lower() == ".pdf"
+
+    doc_service = DocumentService()
+    apartados = doc_service.extract_structure(target.read_bytes(), "application/pdf")
+    assert len(apartados) == 110
+    assert apartados[0]["titulo"] == "Prefacio"
+
+    # Verificar que el endpoint /structure devuelve los 110 apartados
+    app.state.document_service = doc_service
+    client = TestClient(app)
+    resp = client.get("/api/v1/files/corpus/NM-008/structure")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_apartados"] == 110
+    assert len(data["apartados"]) == 110
+
+
+def test_nm007_esp32_endpoints_operate_controlled():
+    """Verifica que NM-007 (sin TOC interno) se gestiona de forma controlada sin fallar."""
+    from app.services.corpus_loader import find_corpus_root, resolve_corpus_file
+    from app.services.document_service import DocumentService
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    corpus_root = find_corpus_root()
+    if not corpus_root or not (corpus_root / "NM-007_ESP32_en_el_Aula").exists():
+        pytest.skip("Corpus físico NM-007 no disponible en el entorno")
+
+    target = resolve_corpus_file("NM-007", corpus_root)
+    assert target is not None
+    assert target.name == "NM-007_ESP32_en_el_Aula.pdf"
+
+    app.state.document_service = DocumentService()
+    client = TestClient(app)
+    resp = client.get("/api/v1/files/corpus/NM-007/structure")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_apartados"] == 0
+    assert data["apartados"] == []
+
+
+def test_existing_verified_apto_documents_continue_working():
+    """5. Los documentos que funcionaban antes continúan funcionando perfectamente."""
+    from app.services.corpus_loader import find_corpus_root, resolve_corpus_file
+
+    corpus_root = find_corpus_root()
+    if not corpus_root:
+        pytest.skip("Corpus físico no disponible")
+
+    for doc_id in ("NM-004", "NM-006", "NM-015"):
+        target = resolve_corpus_file(doc_id, corpus_root)
+        assert target is not None
+        assert target.is_file()
+        assert target.suffix.lower() == ".pdf"
+
+
+def test_get_corpus_status_only_available_excludes_missing_and_no_apto():
+    """Comprueba que get_corpus_status(only_available=True) filtre estrictamente por las 3 condiciones."""
+    from app.services.corpus_loader import get_corpus_status
+
+    all_docs = get_corpus_status(only_available=False)
+    available_docs = get_corpus_status(only_available=True)
+
+    assert len(all_docs) == 22
+    assert len(available_docs) == 13
+
+    for doc in available_docs:
+        assert doc["archivo_disponible"] is True
+        assert doc["nombre_archivo"] is not None
+        assert doc["resultado_evaluacion"] in ("APTO", "APTO_CON_REVISIÓN")
+        assert doc["resultado_evaluacion"] != "NO_APTO"
+
+    avail_ids = {d["identificador_documento"] for d in available_docs}
+    # Los 9 documentos ausentes/NO_APTO no deben figurar
+    for missing_id in ("NM-003", "NM-005", "NM-012", "NM-013", "NM-017", "NM-018", "NM-019", "NM-021", "NM-022"):
+        assert missing_id not in avail_ids
+
+
+def test_api_corpus_endpoint_solo_disponibles_filter():
+    """GET /api/v1/files/corpus?solo_disponibles=true debe devolver solo los 13 documentos procesables."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    resp_all = client.get("/api/v1/files/corpus")
+    assert resp_all.status_code == 200
+    assert len(resp_all.json()) == 22
+
+    resp_solo = client.get("/api/v1/files/corpus?solo_disponibles=true")
+    assert resp_solo.status_code == 200
+    data_solo = resp_solo.json()
+    assert len(data_solo) == 13
+
+    for doc in data_solo:
+        assert doc["archivo_disponible"] is True
+        assert doc["resultado_evaluacion"] in ("APTO", "APTO_CON_REVISIÓN")
+
+
+def test_resolve_corpus_file_compatible_only_discards_html(tmp_path: Path):
+    """resolve_corpus_file con compatible_only=True descarta formatos no soportados como .html."""
+    from app.services.corpus_loader import resolve_corpus_file
+
+    doc_dir = tmp_path / "COMP-02_Dir"
+    doc_dir.mkdir(parents=True, exist_ok=True)
+    (doc_dir / "COMP-02_Doc.html").write_text("<html>Texto</html>", encoding="utf-8")
+
+    # Sin compatible_only (admite cualquier formato existente)
+    assert resolve_corpus_file("COMP-02", tmp_path, compatible_only=False) is not None
+
+    # Con compatible_only=True (.html no es compatible con el sistema RAG)
+    assert resolve_corpus_file("COMP-02", tmp_path, compatible_only=True) is None

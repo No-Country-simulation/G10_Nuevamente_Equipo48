@@ -76,23 +76,44 @@ class OCIService:
         try:
             import oci  # Importación diferida: solo se necesita si OCI está configurado
 
-            # Construir config desde variables de entorno (sin depender de ~/.oci/config)
-            oci_config = {
-                "user": settings.oci_user_ocid,
-                "fingerprint": settings.oci_fingerprint,
-                "tenancy": settings.oci_tenancy_ocid,
-                "region": settings.oci_region,
-                "key_file": settings.oci_private_key_path,
-            }
+            campos_usuario = [
+                settings.oci_user_ocid,
+                settings.oci_fingerprint,
+                settings.oci_tenancy_ocid,
+                settings.oci_private_key_path,
+            ]
+            if all(campos_usuario) and getattr(settings, "oci_auth_type", "auto") != "instance_principal":
+                # Modo credenciales de usuario IAM
+                oci_config = {
+                    "user": settings.oci_user_ocid,
+                    "fingerprint": settings.oci_fingerprint,
+                    "tenancy": settings.oci_tenancy_ocid,
+                    "region": settings.oci_region,
+                    "key_file": settings.oci_private_key_path,
+                }
+                self._client = oci.object_storage.ObjectStorageClient(oci_config)
+                logger.info(
+                    "OCI Object Storage inicializado con credenciales de usuario. "
+                    "Namespace: %s | Bucket: %s",
+                    settings.oci_namespace,
+                    settings.oci_bucket_name,
+                )
+            else:
+                # Modo Instance Principals nativo de la VM OCI Compute
+                signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+                client_config = {}
+                if settings.oci_region:
+                    client_config["region"] = settings.oci_region
+                self._client = oci.object_storage.ObjectStorageClient(client_config, signer=signer)
+                logger.info(
+                    "OCI Object Storage inicializado con Instance Principals. "
+                    "Namespace: %s | Bucket: %s | Region: %s",
+                    settings.oci_namespace,
+                    settings.oci_bucket_name,
+                    settings.oci_region or "auto",
+                )
 
-            self._client = oci.object_storage.ObjectStorageClient(oci_config)
             self._modo_degradado = False
-            logger.info(
-                "OCI Object Storage inicializado correctamente. "
-                "Namespace: %s | Bucket: %s",
-                settings.oci_namespace,
-                settings.oci_bucket_name,
-            )
 
         except Exception as e:
             # Fallo en la inicialización → caer en modo degradado sin propagar el error
@@ -218,6 +239,67 @@ class OCIService:
         key = f"artefactos/{documento_id}/resultado.json"
 
         return self.upload_object(key, json_bytes, "application/json")
+
+    def get_object(self, key: str) -> bytes | None:
+        """
+        Descarga el contenido binario de un objeto desde OCI Object Storage.
+
+        Args:
+            key: Clave del objeto en el bucket (ej: "documentos/uuid/file.pdf").
+
+        Returns:
+            Contenido en bytes del objeto, o None si no existe, OCI no esta configurado
+            o la descarga falla.
+        """
+        if self._modo_degradado:
+            return None
+
+        try:
+            resp = self._client.get_object(
+                namespace_name=self._settings.oci_namespace,
+                bucket_name=self._settings.oci_bucket_name,
+                object_name=key,
+            )
+            return resp.data.content
+        except Exception as e:
+            logger.error(
+                "Error al recuperar objeto de OCI Object Storage. Clave: %s | Detalle: %s",
+                key,
+                str(e),
+                exc_info=True,
+            )
+            return None
+
+    def delete_object(self, key: str) -> bool:
+        """
+        Elimina un objeto de OCI Object Storage.
+        Util para pruebas de conectividad y limpieza controlada.
+
+        Args:
+            key: Clave del objeto en el bucket.
+
+        Returns:
+            True si se elimino exitosamente, False en caso de error o modo degradado.
+        """
+        if self._modo_degradado:
+            return False
+
+        try:
+            self._client.delete_object(
+                namespace_name=self._settings.oci_namespace,
+                bucket_name=self._settings.oci_bucket_name,
+                object_name=key,
+            )
+            logger.info("Objeto eliminado exitosamente de OCI: %s", key)
+            return True
+        except Exception as e:
+            logger.error(
+                "Error al eliminar objeto de OCI Object Storage. Clave: %s | Detalle: %s",
+                key,
+                str(e),
+                exc_info=True,
+            )
+            return False
 
 
 # ---------------------------------------------------------------------------

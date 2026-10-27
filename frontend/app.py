@@ -160,12 +160,46 @@ def upload_file_to_backend(
     return response.json()
 
 
-def fetch_corpus_documents(base_url: str, timeout: int = 10) -> list[dict]:
+def filter_catalog_documents(docs: list[dict]) -> list[dict]:
+    """
+    Filtra los documentos del corpus para que el catálogo del frontend muestre
+    exclusivamente aquellos que cumplan simultáneamente:
+      1. Su clasificación pedagógica sea 'APTO' o 'APTO_CON_REVISIÓN'.
+      2. Exista un archivo físico válido y compatible con el procesamiento del sistema.
+      3. El backend pueda resolver correctamente la ruta del archivo.
+
+    Los documentos NO_APTO o sin archivo disponible son estrictamente excluidos.
+    """
+    validos = []
+    for d in (docs or []):
+        eval_res = (d.get("resultado_evaluacion") or "").strip().upper()
+        archivo_disp = bool(d.get("archivo_disponible", False))
+        nombre_arch = d.get("nombre_archivo")
+
+        # Condición 1: APTO o APTO_CON_REVISIÓN (NO_APTO bloqueado)
+        if eval_res not in ("APTO", "APTO_CON_REVISIÓN"):
+            continue
+
+        # Condición 2 y 3: Archivo físico válido, compatible y resoluble
+        if not archivo_disp or not nombre_arch:
+            continue
+
+        validos.append(d)
+    return validos
+
+
+def fetch_corpus_documents(
+    base_url: str,
+    timeout: int = 10,
+    solo_disponibles: bool = False,
+) -> list[dict]:
     """
     Obtiene la lista consolidada de documentos del corpus desde GET /api/v1/files/corpus,
     con fallback automático al inventario CSV si el endpoint no responde.
     """
     url = f"{base_url.rstrip('/')}/api/v1/files/corpus"
+    if solo_disponibles:
+        url += "?solo_disponibles=true"
     try:
         resp = requests.get(url, timeout=timeout)
         if resp.ok:
@@ -186,26 +220,63 @@ def fetch_corpus_documents(base_url: str, timeout: int = 10) -> list[dict]:
     for c in csv_candidates:
         if c.is_file():
             try:
+                corpus_root = None
+                try:
+                    from app.services.corpus_loader import find_corpus_root, resolve_corpus_file
+                    corpus_root = find_corpus_root()
+                except Exception:
+                    pass
+
                 with open(c, encoding="utf-8-sig") as f:
                     rows = list(csv.DictReader(f))
-                    return [
-                        {
-                            "identificador_documento": r.get("identificador_documento", "").strip(),
+                    docs = []
+                    for r in rows:
+                        doc_id = r.get("identificador_documento", "").strip()
+                        if not doc_id:
+                            continue
+                        eval_res = r.get("resultado_evaluacion", "PENDIENTE").strip()
+                        archivo_disp = False
+                        nombre_arch = None
+                        if corpus_root:
+                            try:
+                                target = resolve_corpus_file(
+                                    doc_id,
+                                    corpus_root,
+                                    only_valid=True,
+                                    compatible_only=True,
+                                )
+                                if target and target.is_file():
+                                    archivo_disp = True
+                                    nombre_arch = target.name
+                            except Exception:
+                                pass
+
+                        docs.append({
+                            "identificador_documento": doc_id,
                             "titulo": r.get("titulo", "").strip(),
                             "dominio": r.get("dominio", "General").strip(),
                             "tema": r.get("tema", "").strip(),
                             "descripcion": r.get("descripcion", "").strip(),
-                            "resultado_evaluacion": r.get("resultado_evaluacion", "APTO").strip(),
+                            "resultado_evaluacion": eval_res,
                             "licencia": r.get("licencia", "").strip(),
                             "fuente": r.get("fuente", "").strip(),
-                            "archivo_disponible": True,
+                            "archivo_disponible": archivo_disp,
+                            "nombre_archivo": nombre_arch,
                             "esta_procesado": False,
                             "chunks_indexados": 0,
-                            "estado_flujo": "DISPONIBLE_APTO",
-                        }
-                        for r in rows
-                        if r.get("identificador_documento")
-                    ]
+                            "estado_flujo": (
+                                "DISPONIBLE_APTO" if archivo_disp and eval_res == "APTO"
+                                else f"DISPONIBLE_{eval_res}" if archivo_disp
+                                else f"REGISTRADO_{eval_res}"
+                            ),
+                        })
+                    if solo_disponibles:
+                        docs = [
+                            d for d in docs
+                            if d["archivo_disponible"]
+                            and d["resultado_evaluacion"] in ("APTO", "APTO_CON_REVISIÓN")
+                        ]
+                    return docs
             except Exception:
                 pass
     return []
@@ -253,12 +324,19 @@ def fetch_document_structure(base_url: str, documento_id: str, timeout: int = 15
         ]
         for c in candidatos:
             if c.is_dir():
-                matches = list(c.glob(f"{documento_id}*/*.*"))
-                file_matches = [m for m in matches if m.is_file() and not m.name.startswith(".")]
-                if file_matches:
+                target = None
+                try:
+                    from app.services.corpus_loader import resolve_corpus_file
+                    target = resolve_corpus_file(documento_id, c)
+                except Exception:
+                    matches = list(c.glob(f"{documento_id}*/*.*"))
+                    file_matches = [m for m in matches if m.is_file() and not m.name.startswith(".")]
+                    if file_matches:
+                        pdfs = [m for m in file_matches if m.suffix.lower() == ".pdf"]
+                        target = pdfs[0] if pdfs else file_matches[0]
+                if target and target.is_file():
                     from app.services.document_service import DocumentService
                     doc_svc = DocumentService()
-                    target = file_matches[0]
                     mime = "application/pdf" if target.suffix.lower() == ".pdf" else "text/markdown"
                     return doc_svc.extract_structure(target.read_bytes(), mime)
     except Exception:
@@ -572,7 +650,9 @@ def main() -> None:
 
     if modo_origen == "📚 Catálogo del Corpus":
         corpus_docs = fetch_corpus_documents(API_BASE_URL)
-        if corpus_docs:
+        # Filtrar exclusivamente documentos que cumplan simultáneamente las 3 condiciones
+        docs_disponibles = filter_catalog_documents(corpus_docs)
+        if docs_disponibles:
             # 1. Seleccionar el campo de aplicación
             campo_aplicacion = st.sidebar.selectbox(
                 "🎯 1. Campo de aplicación:",
@@ -585,13 +665,13 @@ def main() -> None:
             if campo_aplicacion != "🌐 Todos los campos":
                 docs_filtrados = [
                     d
-                    for d in corpus_docs
+                    for d in docs_disponibles
                     if DOMINIO_A_CAMPO.get(d.get("dominio")) == campo_aplicacion
                 ]
             else:
-                docs_filtrados = corpus_docs
+                docs_filtrados = docs_disponibles
 
-            # 2. Mostrar el catálogo documental existente con indicación de disponibilidad
+            # 2. Construir las opciones del catálogo con indicación de estado pedagógico
             corpus_options = {}
             for i, doc in enumerate(docs_filtrados):
                 doc_id = (
@@ -601,26 +681,28 @@ def main() -> None:
                     or f"doc_{i}"
                 )
                 doc_title = doc.get("titulo") or doc.get("nombre") or f"Documento {doc_id}"
-                eval_status = doc.get("resultado_evaluacion", "APTO")
-                archivo_disp = doc.get("archivo_disponible", True)
+                eval_status = (doc.get("resultado_evaluacion") or "APTO").strip().upper()
 
-                if not archivo_disp:
-                    status_tag = " ⚠️ [Sin archivo]"
-                elif eval_status != "APTO":
-                    status_tag = f" ⛔ [{eval_status}]"
+                if eval_status == "APTO_CON_REVISIÓN":
+                    status_tag = " ⚠️ [APTO_CON_REVISIÓN]"
                 else:
                     status_tag = " ✅"
                 corpus_options[doc_id] = f"{doc_id} — {doc_title}{status_tag}"
 
             # 3. Seleccionar entre uno y tres documentos
-            selected_labels = st.sidebar.multiselect(
-                "📑 2. Catálogo (selecciona 1 a 3 docs):",
-                options=list(corpus_options.keys()),
-                format_func=lambda k: f"📄 {corpus_options[k]}",
-                max_selections=3,
-                help="Elige de 1 a 3 documentos base del catálogo para el estudio focalizado.",
-            )
-            selected_corpus_ids = selected_labels
+            if corpus_options:
+                selected_labels = st.sidebar.multiselect(
+                    "📑 2. Catálogo (selecciona 1 a 3 docs):",
+                    options=list(corpus_options.keys()),
+                    format_func=lambda k: f"📄 {corpus_options[k]}",
+                    max_selections=3,
+                    help="Elige de 1 a 3 documentos base del catálogo para el estudio focalizado.",
+                )
+                selected_corpus_ids = selected_labels
+            else:
+                st.sidebar.warning(
+                    "⚠️ No hay documentos disponibles en este campo de aplicación que cumplan los criterios pedagógicos y técnicos."
+                )
 
             # 4. Mostrar títulos y subtítulos reales disponibles en los documentos seleccionados
             apartados_map: dict[str, dict] = {}
@@ -651,8 +733,9 @@ def main() -> None:
                         help="Selecciona los títulos y subtítulos específicos de los documentos elegidos que deseas estudiar.",
                     )
                 else:
-                    st.sidebar.warning(
-                        "⚠️ Los documentos seleccionados no contienen apartados, índices o subtítulos estructurados recuperables."
+                    st.sidebar.info(
+                        "ℹ️ El documento seleccionado no cuenta con apartados o índice estructurado en sus metadatos. "
+                        "Puedes definir el alcance de estudio indicando una pregunta o tema orientador abajo."
                     )
 
             titulos_apartados = (
@@ -683,9 +766,9 @@ def main() -> None:
             apartados_map = {}
             apartados_seleccionados = []
             titulos_apartados = []
-            st.sidebar.info(
-                "ℹ️ No se encontraron documentos en el catálogo del corpus. "
-                "Verifica que el backend esté corriendo o cambia a 'Cargar Archivo Nuevo'."
+            st.sidebar.warning(
+                "⚠️ No se encontraron documentos en el catálogo del corpus que cumplan simultáneamente "
+                "con la evaluación pedagógica (APTO o APTO_CON_REVISIÓN) y la disponibilidad física de archivo válido."
             )
             tema_input = ""
     else:
@@ -779,16 +862,18 @@ def main() -> None:
                 )
                 st.stop()
             if not apartados_map:
-                st.error(
-                    "⚠️ Los documentos seleccionados no contienen apartados recuperables. "
-                    "No es posible iniciar la adaptación sin apartados disponibles."
-                )
-                st.stop()
-            if not apartados_seleccionados:
-                st.error(
-                    "⚠️ Selecciona al menos un apartado (título o subtítulo) de los documentos seleccionados."
-                )
-                st.stop()
+                if not (pregunta_corpus and pregunta_corpus.strip()):
+                    st.error(
+                        "⚠️ El documento seleccionado no contiene apartados estructurados recuperables. "
+                        "Por favor, ingresa una pregunta o tema orientador en la barra lateral para guiar el estudio."
+                    )
+                    st.stop()
+            else:
+                if not apartados_seleccionados and not (pregunta_corpus and pregunta_corpus.strip()):
+                    st.error(
+                        "⚠️ Selecciona al menos un apartado a estudiar, o bien ingresa una pregunta o tema orientador en la barra lateral."
+                    )
+                    st.stop()
         else:
             if archivo_subido is None:
                 st.error(

@@ -57,24 +57,28 @@ class Settings(BaseSettings):
     # Ruta al archivo de clave privada PEM para autenticación OCI
     oci_private_key_path: str = ""
 
+    # Tipo de autenticacion OCI: "auto", "instance_principal" o "user"
+    oci_auth_type: str = "auto"
+
     # -------------------------------------------------------------------------
-    # Configuración de CORS
+    # Configuracion de CORS
     # -------------------------------------------------------------------------
-    # Lista de orígenes permitidos separados por coma. Usar "*" para permitir todos.
+    # Lista de origenes permitidos separados por coma. Usar "*" para permitir todos.
     cors_allowed_origins: str = "*"
 
     # -------------------------------------------------------------------------
-    # Configuración de pydantic-settings
+    # Configuracion de pydantic-settings
     # -------------------------------------------------------------------------
     model_config = SettingsConfigDict(
         env_file=[
             ".env",
+            "backend/backend/.env",
             "../.env",
             "../../.env",
         ],
         extra="ignore",
         # Permite sobreescribir valores con variables de entorno del sistema
-        env_file_encoding="utf-8",
+        env_file_encoding="utf-8-sig",
     )
 
     # -------------------------------------------------------------------------
@@ -84,7 +88,7 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         """
-        Retorna la lista de orígenes CORS permitidos.
+        Retorna la lista de origenes CORS permitidos.
         Divide la cadena `cors_allowed_origins` por comas y elimina espacios.
         """
         return [origen.strip() for origen in self.cors_allowed_origins.split(",")]
@@ -92,19 +96,29 @@ class Settings(BaseSettings):
     @property
     def oci_configured(self) -> bool:
         """
-        Retorna True si todas las variables requeridas de OCI están configuradas.
-        Si alguna está vacía, el servicio OCI opera en modo degradado.
+        Retorna True si OCI esta configurado.
+        Soporta modo Instance Principals (requiere al menos oci_namespace y oci_bucket_name)
+        o modo claves IAM de usuario (requiere las 7 variables completas).
+        Si alguna variable esencial falta, el servicio opera en modo degradado.
         """
-        campos_requeridos = [
-            self.oci_namespace,
-            self.oci_bucket_name,
+        if not (self.oci_namespace and self.oci_bucket_name):
+            return False
+
+        if self.oci_auth_type == "instance_principal":
+            return True
+
+        campos_usuario = [
             self.oci_user_ocid,
             self.oci_fingerprint,
             self.oci_tenancy_ocid,
-            self.oci_region,
             self.oci_private_key_path,
         ]
-        return all(campos_requeridos)
+        if all(campos_usuario):
+            return True
+
+        # En modo "auto", si no hay credenciales completas de usuario pero si bucket y namespace,
+        # se habilita para intentar Instance Principals
+        return self.oci_auth_type == "auto"
 
     @property
     def llm_configured(self) -> bool:
